@@ -1,0 +1,1 @@
+"""Backtester — `backtrader` integration."""

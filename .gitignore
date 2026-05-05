@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Helm runtime state — NEVER commit
+*.db
+*.db-journal
+*.duckdb
+*.duckdb.wal
+helm_state/
+backtest_reports/
+audit_log/
+logs/
+*.log
+
+# Secrets
+.env
+.env.local
+*.pem
+*.key
+config.yaml
+secrets.yaml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Backups
+*.bak
+backups/

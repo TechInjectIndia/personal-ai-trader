@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "helm"
+version = "0.1.0"
+description = "Personal investment automation across Zerodha and Interactive Brokers."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Sumeet" }]
+license = { text = "Proprietary — personal use" }
+
+dependencies = [
+    # Broker SDKs
+    "kiteconnect>=4.2.0",     # Zerodha official Python SDK
+    "ib_insync>=0.9.86",      # IBKR async wrapper
+
+    # Data + analytics
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "duckdb>=0.10",           # OHLCV cache
+    "yfinance>=0.2",          # Free US daily bars
+
+    # Backtesting
+    "backtrader>=1.9.78",     # OSS backtester
+
+    # Dashboard + utilities
+    "streamlit>=1.30",
+    "structlog>=24.1",
+    "python-dotenv>=1.0",
+    "keyring>=25.0",          # OS keychain access
+    "click>=8.1",             # CLI
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "hypothesis>=6.99",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+helm = "helm.orchestrator.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["helm*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
