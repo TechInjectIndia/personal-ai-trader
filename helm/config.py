@@ -1,0 +1,173 @@
+"""
+Single source of truth for runtime config.
+
+Values are intentionally hardcoded in code (not a YAML file) — for a single-user
+bot, code is the config. Edit and PM2-reload to change.
+"""
+
+from dataclasses import dataclass
+from datetime import time
+from decimal import Decimal
+
+
+# --- Watchlist ---
+# Mix of (a) Nifty-50 large caps and (b) liquid NSE-listed ETFs that give us
+# commodity / index exposure without leaving the equity segment. Everything
+# here trades intraday MIS on Zerodha and has a usable .NS quote on yfinance.
+# All names target >5 crore daily turnover so slippage on small-size orders
+# stays minimal.
+WATCHLIST: list[str] = [
+    # Large-cap equities
+    "RELIANCE",
+    "HDFCBANK",
+    "ICICIBANK",
+    "INFY",
+    "TCS",
+    "SBIN",
+    "BHARTIARTL",
+    "ITC",
+    "LT",
+    "KOTAKBANK",
+    # ETFs — broad-index and commodity exposure via the equity segment
+    "NIFTYBEES",     # Nifty 50 index ETF
+    "BANKBEES",      # Nifty Bank index ETF
+    "ITBEES",        # Nifty IT index ETF
+    "GOLDBEES",      # Gold ETF
+    "SILVERBEES",    # Silver ETF
+]
+
+EXCHANGE = "NSE"
+
+
+# --- Trading hours (IST) ---
+# We deliberately skip the first 15 minutes (volatility / spread blowouts) and
+# square off well before the 15:25 IST regulatory auto-square-off for MIS.
+MARKET_OPEN = time(9, 15)
+TRADING_START = time(9, 30)            # earliest entry
+TRADING_END = time(14, 45)             # latest entry — no new positions after this
+SQUARE_OFF_AT = time(15, 15)           # close all open paper positions at this time
+MARKET_CLOSE = time(15, 30)
+
+
+# --- Risk limits ---
+@dataclass(frozen=True)
+class RiskLimits:
+    max_open_positions: int = 5
+    max_position_inr: Decimal = Decimal("15000")   # base notional cap per trade
+    daily_loss_kill_inr: Decimal = Decimal("1000") # kill switch trips here (paper)
+    per_symbol_cooldown_min: int = 30              # no re-entry on same symbol
+    max_signals_per_symbol_per_day: int = 5
+
+
+# --- Dynamic position-sizing ladder ---
+# As realised equity grows above initial capital, lift the per-trade notional
+# cap so winners compound rather than the bot trading the same ₹15k forever.
+# Effective cap = clamp(base + step × realised_pnl / step_size, base, hard_max).
+DYNAMIC_CAP_STEP_SIZE_INR: Decimal = Decimal("5000")   # every +₹5k of equity…
+DYNAMIC_CAP_STEP_BOOST_INR: Decimal = Decimal("1500")  # …adds ₹1.5k to the cap
+DYNAMIC_CAP_HARD_MAX_INR: Decimal = Decimal("25000")   # ceiling (50% of initial)
+
+
+def dynamic_position_cap(realised_pnl_inr: Decimal, base_cap_inr: Decimal) -> Decimal:
+    """Per-trade notional cap, scaled by realised profit.
+
+    Losses do NOT shrink the cap below `base_cap_inr` — the wallet-available
+    check in risk.evaluate already prevents trades that don't fit the pool.
+    """
+    if realised_pnl_inr <= 0:
+        return base_cap_inr
+    steps = realised_pnl_inr // DYNAMIC_CAP_STEP_SIZE_INR
+    boosted = base_cap_inr + steps * DYNAMIC_CAP_STEP_BOOST_INR
+    return min(boosted, DYNAMIC_CAP_HARD_MAX_INR)
+
+# Code defaults. Live values come from `live_risk_limits()` which overlays
+# rows from the Postgres `settings` table on top of these defaults — so the
+# Streamlit Settings page can change limits without a PM2 restart.
+RISK = RiskLimits()
+
+
+# --- Wallet (capital pool) ---
+# The bot trades out of a single fixed pool of cash: it starts with
+# `initial_capital_inr`, locks notional in open positions, and rolls realised
+# net P&L back into the pool. Available cash is the hard ceiling on new
+# trades — there is no separate margin or borrow.
+@dataclass(frozen=True)
+class WalletConfig:
+    initial_capital_inr: Decimal = Decimal("50000")
+    goal_capital_inr: Decimal = Decimal("100000")   # 2× initial — "double it"
+
+
+WALLET = WalletConfig()
+
+
+# Settings keys editable from the dashboard. Kept in code so the UI can render
+# a stable schema and we can validate types on write.
+EDITABLE_RISK_KEYS: tuple[str, ...] = (
+    "max_open_positions",
+    "max_position_inr",
+    "daily_loss_kill_inr",
+    "per_symbol_cooldown_min",
+    "max_signals_per_symbol_per_day",
+)
+
+EDITABLE_WALLET_KEYS: tuple[str, ...] = (
+    "initial_capital_inr",
+    "goal_capital_inr",
+)
+
+
+def live_risk_limits() -> RiskLimits:
+    """RISK overlaid with any overrides stored in the Postgres `settings` table.
+
+    Falls back to the code defaults (`RISK`) for any unset key. Imported lazily
+    inside the function to avoid a circular dependency with helm.data.store.
+    """
+    from helm.data.store import all_settings  # local import: see docstring
+
+    overrides = all_settings()
+    return RiskLimits(
+        max_open_positions=int(overrides.get("max_open_positions", RISK.max_open_positions)),
+        max_position_inr=Decimal(str(overrides.get("max_position_inr", RISK.max_position_inr))),
+        daily_loss_kill_inr=Decimal(str(overrides.get("daily_loss_kill_inr", RISK.daily_loss_kill_inr))),
+        per_symbol_cooldown_min=int(
+            overrides.get("per_symbol_cooldown_min", RISK.per_symbol_cooldown_min)
+        ),
+        max_signals_per_symbol_per_day=int(
+            overrides.get("max_signals_per_symbol_per_day", RISK.max_signals_per_symbol_per_day)
+        ),
+    )
+
+
+def live_wallet_config() -> WalletConfig:
+    """WALLET overlaid with any settings-table overrides."""
+    from helm.data.store import all_settings  # local import: see live_risk_limits
+
+    overrides = all_settings()
+    return WalletConfig(
+        initial_capital_inr=Decimal(str(
+            overrides.get("initial_capital_inr", WALLET.initial_capital_inr)
+        )),
+        goal_capital_inr=Decimal(str(
+            overrides.get("goal_capital_inr", WALLET.goal_capital_inr)
+        )),
+    )
+
+
+# --- Polling ---
+TICK_POLL_SECONDS = 30          # how often poll_market.py samples LTP
+SCAN_EVERY_MINUTES = 5          # how often scan_signals.py runs
+
+
+# --- Database ---
+PG_DSN = "dbname=helm"          # unix socket, current user
+
+
+# --- Claude decider ---
+# scripts/decide_signals.py asks Claude whether to take each unconsumed
+# signal. Sonnet 4.6 is the default — faster/cheaper than Opus, and the
+# decision space (TAKE / SKIP a single trade) doesn't need Opus-grade
+# reasoning. Override via DECIDER_MODEL env var if you want to test Opus.
+DECIDER_MODEL_DEFAULT = "claude-sonnet-4-6"
+DECIDER_MAX_TOKENS = 800
+DECIDER_TEMPERATURE = 0.0       # deterministic-ish; we want the same call to repeat
+DECIDER_RECENT_BARS = 30        # how many recent 1-min bars to send to the model
