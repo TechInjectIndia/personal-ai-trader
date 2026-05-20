@@ -39,6 +39,28 @@ WATCHLIST: list[str] = [
 EXCHANGE = "NSE"
 
 
+# --- Competition tradable universe ---
+# The candidate symbol set that freestyle competitors pick their weekly mandate
+# from (≤ MAX_MANDATE_SYMBOLS each — see helm.competition.mandate). A curated
+# superset of WATCHLIST: liquid NSE large/mid caps + index/commodity ETFs, all
+# with reliable {SYM}.NS yfinance quotes and intraday-MIS eligibility. Kept in
+# code (not a YAML file) per the single-source-of-truth config rule. Tickers are
+# deliberately "clean" (no '&'/'-') to avoid yfinance/.NS edge cases. The
+# dynamic poller (scripts/poll_competition.py) polls the union of all active
+# mandates' symbols that fall OUTSIDE WATCHLIST, so candle data exists for
+# whatever the competitors chose — the house poll_market.py stays untouched.
+_EXTRA_TRADABLE: list[str] = [
+    "AXISBANK", "BAJFINANCE", "MARUTI", "HINDUNILVR", "ASIANPAINT",
+    "TITAN", "SUNPHARMA", "TATAMOTORS", "TATASTEEL", "WIPRO",
+    "HCLTECH", "TECHM", "ULTRACEMCO", "NESTLEIND", "POWERGRID",
+    "NTPC", "ONGC", "COALINDIA", "ADANIPORTS", "JSWSTEEL",
+    "GRASIM", "CIPLA", "DRREDDY", "EICHERMOT", "HEROMOTOCO",
+    "BRITANNIA", "HINDALCO", "INDUSINDBK", "SBILIFE", "HDFCLIFE",
+]
+# Invariant: WATCHLIST ⊆ TRADABLE_UNIVERSE (house symbols are always tradable).
+TRADABLE_UNIVERSE: list[str] = WATCHLIST + [s for s in _EXTRA_TRADABLE if s not in WATCHLIST]
+
+
 # --- Trading hours (IST) ---
 # We deliberately skip the first 15 minutes (volatility / spread blowouts) and
 # square off well before the 15:25 IST regulatory auto-square-off for MIS.
@@ -170,6 +192,39 @@ PG_DSN = "dbname=helm"          # unix socket, current user
 # never leak into the house bot's accounting or position counts.
 HOUSE_COMPETITOR_ID = "house-claude"
 HOUSE_TRADE_FILTER = "(competitor_id IS NULL OR competitor_id = 'house-claude')"
+
+
+# --- Competition: backend quotas ---
+# Each league backend runs on a different vendor's free/subscription tier. To
+# keep $0 spend we throttle every backend to a rolling per-window call ceiling
+# (RPD-style); when a backend is exhausted — or a call returns a rate-limit /
+# quota error — the quota subsystem pauses it until the window resets and then
+# auto-resumes. These are conservative POC ceilings; tune as real limits show
+# up in `backend_quota_state` / `agent_invocations`.
+@dataclass(frozen=True)
+class BackendQuota:
+    max_calls: int          # calls allowed per rolling window
+    window_minutes: int     # window length; on exhaustion we pause until it rolls
+
+
+# Subscription / free-gateway paths (claude, opencode) get generous ceilings;
+# the three login-gated free tiers get tighter daily windows so we never blow
+# past a free allowance. A 5-min cadence over a ~5h trading day is ~63 cycles,
+# so anything ≥ ~100/day comfortably covers one agent for a full session.
+BACKEND_QUOTAS: dict[str, "BackendQuota"] = {
+    "claude":   BackendQuota(max_calls=2000, window_minutes=24 * 60),
+    "opencode": BackendQuota(max_calls=2000, window_minutes=24 * 60),
+    "gemini":   BackendQuota(max_calls=200,  window_minutes=24 * 60),
+    "qwen":     BackendQuota(max_calls=1000, window_minutes=24 * 60),
+    "codex":    BackendQuota(max_calls=300,  window_minutes=24 * 60),
+}
+# Fallback for any backend without an explicit entry above.
+DEFAULT_BACKEND_QUOTA = BackendQuota(max_calls=500, window_minutes=24 * 60)
+
+
+def backend_quota(backend: str) -> "BackendQuota":
+    """Quota config for a backend, falling back to DEFAULT_BACKEND_QUOTA."""
+    return BACKEND_QUOTAS.get(backend, DEFAULT_BACKEND_QUOTA)
 
 
 # --- Claude decider ---

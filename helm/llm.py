@@ -355,7 +355,14 @@ def _parse_json(text: str) -> dict:
     s, e = t.find("{"), t.rfind("}")
     if s == -1 or e == -1:
         raise LLMError(f"no JSON object in model output: {text[:200]!r}")
-    return json.loads(t[s:e + 1])
+    try:
+        return json.loads(t[s:e + 1])
+    except json.JSONDecodeError as exc:
+        # Free/varied CLIs sometimes emit braces around non-JSON prose. Surface
+        # this as LLMError so callers' `except LLMError` fail-closed paths (the
+        # decider's SKIP, the competition runner's skip+fallback) handle it
+        # instead of an uncaught JSONDecodeError crashing the cycle.
+        raise LLMError(f"malformed JSON in model output: {text[:200]!r}") from exc
 
 
 def _normalize_verdict(parsed: dict) -> dict:
