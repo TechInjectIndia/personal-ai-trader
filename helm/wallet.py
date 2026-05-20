@@ -28,7 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from helm.config import live_wallet_config
+from helm.config import HOUSE_TRADE_FILTER, live_wallet_config
 from helm.data.store import conn
 
 
@@ -49,19 +49,22 @@ def wallet_state() -> WalletState:
     initial = cfg.initial_capital_inr
     goal = cfg.goal_capital_inr
 
+    # House = the incumbent's own rows only (NULL or 'house-claude'); competitor
+    # league trades must never leak into the house wallet. With no competitors
+    # this is identical to the previous unfiltered query.
     with conn() as c:
         realised = c.execute(
-            """
+            f"""
             SELECT COALESCE(SUM(COALESCE(net_pnl_inr, pnl_inr)), 0) AS pnl
             FROM paper_trades
-            WHERE status = 'CLOSED'
+            WHERE status = 'CLOSED' AND {HOUSE_TRADE_FILTER}
             """
         ).fetchone()["pnl"]
         locked = c.execute(
-            """
+            f"""
             SELECT COALESCE(SUM(qty * entry_price), 0) AS locked
             FROM paper_trades
-            WHERE status = 'OPEN'
+            WHERE status = 'OPEN' AND {HOUSE_TRADE_FILTER}
             """
         ).fetchone()["locked"]
 

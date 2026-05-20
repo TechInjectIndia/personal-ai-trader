@@ -18,8 +18,13 @@ SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 
 @contextmanager
-def conn() -> Iterator[psycopg.Connection]:
-    """Yield a connection with autocommit + dict row factory."""
+def conn() -> Iterator[psycopg.Connection[dict[str, Any]]]:
+    """Yield a connection with autocommit + dict row factory.
+
+    The `dict[str, Any]` row-type parameter tells the type checker that cursor
+    rows are dicts (we pass `row_factory=dict_row`), so `row["col"]` access
+    typechecks across the codebase instead of looking like tuple indexing.
+    """
     c = psycopg.connect(PG_DSN, autocommit=True, row_factory=dict_row)
     try:
         yield c

@@ -162,6 +162,16 @@ SCAN_EVERY_MINUTES = 5          # how often scan_signals.py runs
 PG_DSN = "dbname=helm"          # unix socket, current user
 
 
+# --- Competition league ---
+# The incumbent single-pool bot is competitor 'house-claude'. Its live cron
+# path doesn't stamp competitor_id (inserts NULL), while legacy rows were
+# backfilled to 'house-claude'; so "house" rows are (NULL OR 'house-claude').
+# The wallet/risk house path filters on exactly that set so competitor trades
+# never leak into the house bot's accounting or position counts.
+HOUSE_COMPETITOR_ID = "house-claude"
+HOUSE_TRADE_FILTER = "(competitor_id IS NULL OR competitor_id = 'house-claude')"
+
+
 # --- Claude decider ---
 # scripts/decide_signals.py asks Claude whether to take each unconsumed
 # signal. Sonnet 4.6 is the default — faster/cheaper than Opus, and the

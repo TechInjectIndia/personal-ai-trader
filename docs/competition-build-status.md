@@ -87,3 +87,30 @@ Do **not** start these until the human explicitly approves. Suggested order (fro
 4. **J4 — quota subsystem:** keep free-tier agents inside free quotas using `backend_quota_state`; on exhaustion → log + pause-until-reset + auto-resume.
 5. **J5 — dashboard pages:** league leaderboard (equity per competitor) + a "how it thinks" reasoning view backed by `agent_invocations`.
 6. Re-integrate, re-run the tester, commit after each job. Never push.
+
+---
+
+## UPDATE 2026-05-20 · J2 — Freestyle runner DONE
+
+**Scope this run:** J2 only (the freestyle competition runner). $0 spend (subscription/opencode-free CLIs only; `ANTHROPIC_API_KEY` never set). Local commit only — not pushed. **NOT wired into cron** — going live is a human decision (each cycle spends backend quota). The incumbent `house-claude` scan→decide→execute cron pipeline is untouched.
+
+### What J2 adds
+- **`helm/competition/wallet.py`** — `competitor_wallet_state(id)`: per-competitor `WalletState`, recomputed from that competitor's `paper_trades` + its `competitor_wallets.initial_capital`. `sync_wallet_cache(id)` refreshes the denormalised `available_inr`/`realized_pnl_inr` columns for the dashboard. Money is `Decimal`.
+- **`helm/competition/execute.py`** — the league chokepoint. `execute_competitor_open(...)` synthesises a `signals` row (`strategy='freestyle'`, stamped `competitor_id`, immediately consumed), runs the per-competitor risk gate, writes a `decisions` row, and on pass opens a `paper_trades` row — every row carries `competitor_id`. `close_competitor_position(...)` does discretionary early exit reusing the Zerodha-MIS charge model. Long-only v1.
+- **`helm/competition/runner.py`** — one decision cycle per competitor: build snapshot (recent 1-min candles for the competitor's universe + its open positions + wallet) → call its backend via `helm.llm.complete_json` with a freestyle OPEN/CLOSE/HOLD actions schema + persona → log to `agent_invocations` → route actions through the execute path. Universe comes from this week's `competitor_mandates` row when present (J3 drop-in), else a default slice of `WATCHLIST`. Execution price = live yfinance LTP, falling back to the snapshot's last candle close.
+- **`helm/orchestrator/risk.py`** — every check now takes optional `competitor_id`. `None` ⇒ the incumbent **house book** (`competitor_id IS NULL OR 'house-claude'`); a concrete id ⇒ that competitor's own rows. Each competitor gets independent open-position / daily-loss / cooldown / max-signals limits and is sized against its own isolated wallet.
+- **`helm/wallet.py`** — house `wallet_state()` now filters to house rows (`HOUSE_TRADE_FILTER`) so league trades never leak into the incumbent's equity/sizing. With no competitors trading this is identical to the previous unfiltered query.
+- **`helm/config.py`** — `HOUSE_COMPETITOR_ID` / `HOUSE_TRADE_FILTER` constants (single source of truth for "which rows are the house's").
+- **`helm/data/store.py`** — `conn()` annotated `Connection[dict[str, Any]]` (type-only; matches the runtime `dict_row` factory). This fixed the dict_row typing cascade the J1 status flagged: **`mypy helm` 141 → 65 errors**.
+- **`scripts/seed_competitors.py`** — idempotent: seeds the 4 freestyle competitors (`gemini-momentum`, `qwen-meanrev`, `codex-trend`, `opencode-range`) each with a distinct persona + isolated ₹50k wallet.
+- **`scripts/run_competitors.py`** — cron-ready CLI (`--competitor`, `--backend`, `--dry-run`, `--force-window`). No-ops outside the trading window unless forced.
+
+### Verification
+- `ruff check helm scripts` → clean. `pytest -q` → 34 passed (delta 0). `mypy helm` → 65 (well below the 141 baseline; net improvement).
+- **Deterministic functional test:** open→close a competitor trade; verified isolated wallet debit/credit, net-P&L with charges, per-competitor cooldown block, and that the house wallet/risk count is unaffected by competitor trades (leak found and fixed mid-run).
+- **Live LLM integration:** real `opencode` backend produced a valid OPEN action (with stop/target/reason + commentary) from the live snapshot; runner resolved the live price, validated the stop, and logged the call to `agent_invocations` (ok=true, 23.8s). Test artifacts cleaned up — all 4 freestyle wallets left pristine at ₹50,000.
+
+### Auth status unchanged (re-run `python scripts/smoke_backends.py` after any login)
+Usable now: `claude` (incumbent), `opencode` (freestyle). Still NEEDS-AUTH: `gemini`, `qwen`, `codex` — they're seeded and will compete the moment their CLI is logged in.
+
+### NEXT (still awaiting human go): J3 dynamic mandate+poller · J4 quota subsystem · J5 dashboard pages, then go-live (add `run_competitors.py` to cron) once the human approves.
