@@ -73,6 +73,10 @@ def main() -> int:
     p.add_argument("--competitor", default=None, help="run just one competitor id")
     p.add_argument("--backend", default=None,
                    help="override the backend for this run (testing only)")
+    p.add_argument("--model", default=None,
+                   help="override the model (pairs with --backend; when --backend "
+                        "is given without --model, the model resets to that "
+                        "backend's own default)")
     p.add_argument("--dry-run", action="store_true",
                    help="call the backend and decide, but do not book trades")
     p.add_argument("--force-window", action="store_true",
@@ -93,7 +97,15 @@ def main() -> int:
 
     competitors = _select(args.competitor)
     if args.backend:
-        competitors = [replace(c, backend=args.backend) for c in competitors]
+        # Overriding the backend invalidates the competitor's vendor-specific
+        # model: forcing --backend claude on gemini-momentum must NOT pass
+        # --model gemini-2.5-flash to the claude CLI (it 404s on an unknown
+        # model). Reset to the explicit --model, else None so the adapter
+        # resolves its own default. (Non-claude adapters ignore model.)
+        competitors = [replace(c, backend=args.backend, model=args.model)
+                       for c in competitors]
+    elif args.model:
+        competitors = [replace(c, model=args.model) for c in competitors]
 
     if not competitors:
         _say("no freestyle competitors to run")
