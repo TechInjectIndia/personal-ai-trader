@@ -114,3 +114,57 @@ Do **not** start these until the human explicitly approves. Suggested order (fro
 Usable now: `claude` (incumbent), `opencode` (freestyle). Still NEEDS-AUTH: `gemini`, `qwen`, `codex` — they're seeded and will compete the moment their CLI is logged in.
 
 ### NEXT (still awaiting human go): J3 dynamic mandate+poller · J4 quota subsystem · J5 dashboard pages, then go-live (add `run_competitors.py` to cron) once the human approves.
+
+---
+
+## UPDATE 2026-05-20 · J3 + J4 + J5 — DONE (all phases complete)
+
+**Scope this run:** finish J3, J4, J5 and integrate. $0 spend (subscription/opencode-free CLIs only; `ANTHROPIC_API_KEY` never set). Local commits only — **not pushed**. The league runner / mandate planner / dynamic poller are **NOT wired into cron** — going live remains a human decision. The incumbent `house-claude` cron pipeline is untouched.
+
+### Commits added this run (top first)
+| Commit | What |
+|---|---|
+| `b6ef657` | **J5** — competition league dashboard page + standings + `league_status` CLI |
+| `9f63597` | **J4** — per-backend quota subsystem + shared quota-gated invocation path |
+| `cde42d3` | **J3** — weekly competitor mandates + dynamic union poller |
+
+### ⚠️ Concurrency event (important context)
+A **second Claude session was building these same phases in this same working tree at the same time.** It committed J3 (`cde42d3`) mid-build; because the checkout is shared, the J4 `BACKEND_QUOTAS` config additions written by *this* session were swept into that J3 commit. On the human's instruction ("if it's working let it finish, you take over") this session **took over** after the other went idle, kept the committed J3, fixed the resulting break (the committed `mandate.py` imported `runner._log_invocation`, which the J4 refactor had removed), and folded J3's planner into the shared quota-gated path. Net result is one coherent build; no work was lost. *Lesson for next time: never run two autonomous builders against one working tree.*
+
+### J3 — weekly mandate + dynamic poller (`cde42d3`, reconciled in `9f63597`)
+- **`helm/config.py`**: `TRADABLE_UNIVERSE` — a curated 45-symbol candidate set (WATCHLIST + 29 liquid large caps/ETFs) competitors pick their weekly mandate from. (`TATAMOTORS` pruned in J4: no reliable `.NS` quote on yfinance post-demerger; the other 29 extras were yfinance-verified.)
+- **`helm/competition/mandate.py`**: per-competitor weekly planner. `generate_mandate` asks the agent's own backend (quota-gated, traced) to pick ≤15 symbols from `TRADABLE_UNIVERSE` + a free-form `strategy_config` + rationale; `_clean_universe` validates against the candidate set; `ensure_mandate` upserts one row per `(competitor_id, week_start=Monday)` idempotently. `mandate_symbols()` / `extra_polling_symbols()` give the poller its workload.
+- **`scripts/plan_mandates.py`**: weekly cron entry (`--competitor`, `--backend`, `--force`, `--dry-run`). Idempotent within a week.
+- **`scripts/poll_competition.py`**: per-minute cron entry. Polls (yfinance `{SYM}.NS`) the union of all active mandates' symbols **outside** WATCHLIST → `ticks` → `roll_minute_candles`; no-ops outside market hours and when nothing extra is mandated. `poll_market.py` is untouched (no double-polling).
+
+### J4 — backend quota subsystem (`9f63597`)
+- **`helm/config.py`**: `BACKEND_QUOTAS` (per-backend rolling call ceilings; conservative free-tier values) + `BackendQuota` + `backend_quota()`.
+- **`helm/competition/quota.py`**: rolling per-backend window over `backend_quota_state`. `check_and_reserve` (window-roll + auto-resume after a pause), `note_error` (force-pause when a backend *returns* a quota/rate-limit error), `quota_status` (dashboard), `reset` (admin). Exhaustion → pause-until-window-rolls → auto-resume, all audited.
+- **`helm/competition/backend.py`**: `call_backend()` — the one shared chokepoint used by both the runner and the planner: reserve quota → `helm.llm.complete_json` → trace to `agent_invocations` → note quota errors. A paused backend is skipped without spending anything.
+- **`helm/competition/competitors.py`**: `Competitor` + `freestyle_competitors`/`get_competitor`/`week_start`, extracted so runner & mandate share them with no import cycle (runner re-exports for `scripts/run_competitors.py`).
+- **`helm/competition/runner.py`**: invokes via `call_backend`; a quota-paused cycle is `CycleResult.paused` (skipped, not an error). `run_competitors.py` / `plan_mandates.py` surface the paused outcome.
+
+### J5 — dashboard pages (`b6ef657`)
+- **`helm/competition/leaderboard.py`**: single source of truth for standings. One equity-ranked `LeaderRow` per competitor on a common ₹50k basis; selects the right book filter per row (house = `competitor_id NULL OR 'house-claude'`, others = own id), so the house's live cron trades count and league trades stay isolated.
+- **`helm/dashboard/pages/8_Competition_League.py`**: read-only page — standings table + leader metrics, equity bar chart, this-week mandates (universe + rationale + strategy_config), a **"how it thinks"** view that parses recent `agent_invocations` into actions/commentary (or mandate universe) with raw prompt+response, and backend quota state.
+- **`scripts/league_status.py`**: terminal leaderboard + mandates + quotas (read-only, $0).
+
+### Verification (this run)
+- `ruff check helm tests scripts` → **clean**.
+- `mypy helm` → **66** (baseline 65; the +1 is the `pandas` `import-untyped` note that every existing dashboard page already carries — `leaderboard.py` and all non-page modules are clean). The J2-era dict_row work already cut the original 141 baseline to 65.
+- `pytest -q` → **34 passed** (delta 0).
+- `init_schema()` ×2 → idempotent **OK**.
+- **Live $0 functional tests:** real `opencode` mandate plan persisted a 15-symbol universe (+ strategy_config + rationale); `extra_polling_symbols()` returned exactly the 2 names outside WATCHLIST; a full $0 dry-run `opencode` competitor cycle reserved quota, logged an `actions`+`commentary` invocation, and returned a sensible HOLD. Quota lifecycle (reserve → exhaust → pause → auto-resume → error-pause) unit-checked. `league_status` shows `house-claude`'s live book (17 trades, 47% win, ₹49,837) ranked vs the four pristine ₹50k freestyle wallets. **All test artifacts cleaned** (mandate + quota test rows removed; no trades booked; wallets pristine; `agent_invocations` left as ledger evidence).
+
+### Go-live checklist (human, when ready)
+1. Log in the three NEEDS-AUTH backends (`gemini`, `qwen`, `codex`) — see `docs/competition-backends-status.md` — and re-run `python scripts/smoke_backends.py`. The league can start with whatever subset is authed (`claude`+`opencode` already work). Ensure cron's env has `~/.npm-global/bin` on `PATH`.
+2. Seed/refresh: `python scripts/seed_competitors.py` then `python scripts/plan_mandates.py` (sets this week's mandates).
+3. Add to crontab (mirrors the house loop; not added automatically):
+   ```cron
+   30 3 * * 1     run_in_venv.sh scripts/plan_mandates.py    >> logs/mandates.log 2>&1
+   * 3-9 * * 1-5  run_in_venv.sh scripts/poll_competition.py >> logs/poll_competition.log 2>&1
+   */5 3-9 * * 1-5 run_in_venv.sh scripts/run_competitors.py >> logs/competitors.log 2>&1
+   ```
+4. Watch the dashboard's **Competition League** page (`pm2 restart helm-dashboard` to pick up the new page).
+
+**All five build phases (J0–J5) are complete on `feat/competition-league`. Nothing pushed; nothing on cron.**
