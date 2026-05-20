@@ -91,6 +91,9 @@ def main() -> int:
     for comp in competitors:
         if args.dry_run:
             plan = generate_mandate(comp)
+            if plan["paused"]:
+                print(f"  {comp.id:<18} [{comp.backend}] PAUSED (quota) — no plan")
+                continue
             print(f"  {comp.id:<18} [{comp.backend}] "
                   f"{'(fallback) ' if plan['fellback'] else ''}"
                   f"universe={plan['universe']}")
@@ -98,9 +101,12 @@ def main() -> int:
             continue
         res = ensure_mandate(comp, force=args.force)
         planned += int(res["created"])
-        tag = "planned" if res["created"] else "kept"
-        if res["created"] and res["fellback"]:
-            tag = "planned(fallback)"
+        if res["paused"]:
+            tag = "paused(quota)"
+        elif res["created"]:
+            tag = "planned(fallback)" if res["fellback"] else "planned"
+        else:
+            tag = "kept"
         print(f"  {comp.id:<18} [{comp.backend}] {tag}: {res['universe']}")
 
     if not args.dry_run:

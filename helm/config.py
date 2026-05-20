@@ -51,7 +51,7 @@ EXCHANGE = "NSE"
 # whatever the competitors chose — the house poll_market.py stays untouched.
 _EXTRA_TRADABLE: list[str] = [
     "AXISBANK", "BAJFINANCE", "MARUTI", "HINDUNILVR", "ASIANPAINT",
-    "TITAN", "SUNPHARMA", "TATAMOTORS", "TATASTEEL", "WIPRO",
+    "TITAN", "SUNPHARMA", "TATASTEEL", "WIPRO",
     "HCLTECH", "TECHM", "ULTRACEMCO", "NESTLEIND", "POWERGRID",
     "NTPC", "ONGC", "COALINDIA", "ADANIPORTS", "JSWSTEEL",
     "GRASIM", "CIPLA", "DRREDDY", "EICHERMOT", "HEROMOTOCO",

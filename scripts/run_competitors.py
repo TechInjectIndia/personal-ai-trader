@@ -102,13 +102,15 @@ def main() -> int:
     _say(f"running {len(competitors)} competitor(s) "
          f"now_ist={now.strftime('%H:%M:%S')} dry_run={args.dry_run}")
 
-    totals = {"opened": 0, "closed": 0, "held": 0, "blocked": 0, "errors": 0, "ok": 0}
+    totals = {"opened": 0, "closed": 0, "held": 0, "blocked": 0,
+              "errors": 0, "paused": 0, "ok": 0}
     for comp in competitors:
         res = run_competitor_cycle(comp, dry_run=args.dry_run)
         totals["ok"] += int(res.ok)
+        totals["paused"] += int(res.paused)
         for k in ("opened", "closed", "held", "blocked", "errors"):
             totals[k] += getattr(res, k)
-        status = "ok" if res.ok else "FAIL"
+        status = "PAUSED" if res.paused else ("ok" if res.ok else "FAIL")
         print(f"  {comp.id:<18} [{comp.backend}] {status}: {res.message[:160]}")
 
     insert_audit("run_competitors", "run_summary",

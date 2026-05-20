@@ -21,18 +21,29 @@ Nothing here touches the incumbent house pipeline.
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from helm.competition.backend import BackendCall, call_backend
+from helm.competition.competitors import (
+    Competitor,
+    freestyle_competitors,
+    get_competitor,
+    week_start,
+)
 from helm.competition.execute import close_competitor_position, execute_competitor_open
 from helm.competition.wallet import competitor_wallet_state
 from helm.config import WATCHLIST
 from helm.data.store import conn, insert_audit, todays_candles
-from helm.llm import LLMError, complete_json
+
+# Re-exported for backwards-compatible imports (scripts/run_competitors.py).
+__all__ = [
+    "Competitor", "freestyle_competitors", "get_competitor",
+    "CycleResult", "run_competitor_cycle", "competitor_universe", "build_snapshot",
+]
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -95,17 +106,6 @@ OUTPUT — strict JSON only, no prose, no markdown fences:
 "commentary": "one-line overall read (optional)"}}"""
 
 
-@dataclass(frozen=True)
-class Competitor:
-    id: str
-    name: str
-    backend: str
-    model: str | None
-    persona: str
-    autonomy_level: str
-    status: str
-
-
 @dataclass
 class CycleResult:
     competitor_id: str
@@ -115,38 +115,8 @@ class CycleResult:
     held: int = 0
     blocked: int = 0
     errors: int = 0
+    paused: bool = False        # backend was quota-paused; cycle skipped, not failed
     message: str = ""
-
-
-def freestyle_competitors() -> list[Competitor]:
-    """Active freestyle competitors, in stable id order."""
-    with conn() as c:
-        rows = list(c.execute(
-            """
-            SELECT id, name, backend, model, persona, autonomy_level, status
-            FROM competitors
-            WHERE status = 'active' AND autonomy_level = 'freestyle'
-            ORDER BY id ASC
-            """
-        ))
-    return [Competitor(**r) for r in rows]
-
-
-def get_competitor(competitor_id: str) -> Competitor | None:
-    with conn() as c:
-        row = c.execute(
-            """
-            SELECT id, name, backend, model, persona, autonomy_level, status
-            FROM competitors WHERE id = %s
-            """,
-            (competitor_id,),
-        ).fetchone()
-    return Competitor(**row) if row else None
-
-
-def _week_start(d: date) -> date:
-    """Monday of the week containing d (mandates are keyed by week_start)."""
-    return d - timedelta(days=d.weekday())
 
 
 def competitor_universe(competitor_id: str) -> list[str]:
@@ -157,7 +127,7 @@ def competitor_universe(competitor_id: str) -> list[str]:
             SELECT universe FROM competitor_mandates
             WHERE competitor_id = %s AND week_start = %s
             """,
-            (competitor_id, _week_start(datetime.now(IST).date())),
+            (competitor_id, week_start()),
         ).fetchone()
     if row and row["universe"]:
         syms = [str(s).upper() for s in row["universe"] if s]
@@ -234,46 +204,30 @@ def _build_user_prompt(snapshot: dict) -> str:
     )
 
 
-def _log_invocation(
-    competitor: Competitor, prompt: str, raw_output: str | None,
-    latency_ms: int, ok: bool, error: str | None,
-) -> None:
-    with conn() as c:
-        c.execute(
-            """
-            INSERT INTO agent_invocations
-                (competitor_id, backend, model, prompt, raw_output, latency_ms, ok, error)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (competitor.id, competitor.backend, competitor.model,
-             prompt[:20000], (raw_output or "")[:20000], latency_ms, ok,
-             (error or None) and error[:1000]),
-        )
+def invoke_competitor(competitor: Competitor, snapshot: dict) -> BackendCall:
+    """Call the competitor's backend for actions through the quota-gated path.
 
-
-def invoke_competitor(competitor: Competitor, snapshot: dict) -> dict | None:
-    """Call the competitor's backend for actions; log it; return parsed dict.
-
-    Returns None on transport/parse failure (already logged + audited).
+    Returns a BackendCall: `.quota_blocked` ⇒ benched (no call made), `.ok`
+    ⇒ `.parsed` holds the actions dict, else a transport/parse failure (already
+    traced to agent_invocations). Quota skips and errors are also audited here.
     """
-    system = SYSTEM_PROMPT_TEMPLATE.format(persona=competitor.persona or "Balanced discretionary intraday trader.")
+    system = SYSTEM_PROMPT_TEMPLATE.format(
+        persona=competitor.persona or "Balanced discretionary intraday trader."
+    )
     user = _build_user_prompt(snapshot)
-    started = time.monotonic()
-    try:
-        result = complete_json(
-            system, user, schema=ACTIONS_SCHEMA,
-            model=competitor.model, backend=competitor.backend,
-        )
-    except LLMError as exc:
-        latency_ms = int((time.monotonic() - started) * 1000)
-        _log_invocation(competitor, user, None, latency_ms, ok=False, error=str(exc))
+    call = call_backend(
+        competitor_id=competitor.id, backend=competitor.backend,
+        model=competitor.model, system=system, user=user, schema=ACTIONS_SCHEMA,
+    )
+    if call.quota_blocked:
+        insert_audit("competition_runner", "quota_skip",
+                     {"competitor_id": competitor.id, "backend": competitor.backend,
+                      "reason": call.reason})
+    elif not call.ok:
         insert_audit("competition_runner", "llm_error",
                      {"competitor_id": competitor.id, "backend": competitor.backend,
-                      "error": str(exc)[:500]})
-        return None
-    latency_ms = int((time.monotonic() - started) * 1000)
-    _log_invocation(competitor, user, json.dumps(result), latency_ms, ok=True, error=None)
-    return result
+                      "error": (call.error or "")[:500]})
+    return call
 
 
 def _ltp(symbol: str) -> Decimal | None:
@@ -371,12 +325,18 @@ def run_competitor_cycle(competitor: Competitor, *, dry_run: bool = False) -> Cy
         result.message = f"setup error: {exc}"
         return result
 
-    parsed = invoke_competitor(competitor, snapshot)
-    if parsed is None:
+    call = invoke_competitor(competitor, snapshot)
+    if call.quota_blocked:
+        result.ok = True
+        result.paused = True
+        result.message = f"skipped (quota): {call.reason}"
+        return result
+    if not call.ok or call.parsed is None:
         result.errors += 1
         result.message = "backend call failed (see agent_invocations)"
         return result
 
+    parsed = call.parsed
     actions = parsed.get("actions") or []
     if not isinstance(actions, list):
         result.message = "backend returned no actions list"

@@ -22,15 +22,14 @@ subscription / free gateways). No Anthropic API key is ever required.
 from __future__ import annotations
 
 import json
-import time
 from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from helm.competition.runner import Competitor, _log_invocation
+from helm.competition.backend import call_backend
+from helm.competition.competitors import Competitor
 from helm.config import TRADABLE_UNIVERSE, WATCHLIST
 from helm.data.store import conn, insert_audit
-from helm.llm import LLMError, complete_json
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -119,10 +118,12 @@ def generate_mandate(competitor: Competitor) -> dict[str, Any]:
     """Ask the competitor's backend for its weekly mandate.
 
     Returns a dict with keys: universe (validated, non-empty), strategy_config,
-    rationale, raw (the parsed backend payload), and `fellback` (True if the
-    backend produced no valid picks and a WATCHLIST slice was substituted).
-    The invocation is logged to `agent_invocations` (the quota / "how it thinks"
-    ledger), exactly like a trading cycle.
+    rationale, raw (the parsed backend payload), `fellback` (True if the backend
+    produced no valid picks and a WATCHLIST slice was substituted), and `paused`
+    (True if the backend was quota-paused and never called). The call is routed
+    through the shared quota-gated path (helm.competition.backend.call_backend),
+    so it respects per-backend quotas and is traced to `agent_invocations`
+    (the quota / "how it thinks" ledger), exactly like a trading cycle.
     """
     persona = competitor.persona or "Balanced discretionary intraday trader."
     system = SYSTEM_PROMPT_TEMPLATE.format(
@@ -130,21 +131,19 @@ def generate_mandate(competitor: Competitor) -> dict[str, Any]:
     )
     user = _build_user_prompt(competitor)
 
-    raw: dict[str, Any] = {}
-    started = time.monotonic()
-    try:
-        raw = complete_json(
-            system, user, schema=MANDATE_SCHEMA,
-            model=competitor.model, backend=competitor.backend,
-        )
-        latency_ms = int((time.monotonic() - started) * 1000)
-        _log_invocation(competitor, user, json.dumps(raw), latency_ms, ok=True, error=None)
-    except LLMError as exc:
-        latency_ms = int((time.monotonic() - started) * 1000)
-        _log_invocation(competitor, user, None, latency_ms, ok=False, error=str(exc))
+    call = call_backend(
+        competitor_id=competitor.id, backend=competitor.backend,
+        model=competitor.model, system=system, user=user, schema=MANDATE_SCHEMA,
+    )
+    raw: dict[str, Any] = call.parsed or {}
+    if call.quota_blocked:
+        insert_audit("competition_mandate", "quota_skip",
+                     {"competitor_id": competitor.id, "backend": competitor.backend,
+                      "reason": call.reason})
+    elif not call.ok:
         insert_audit("competition_mandate", "llm_error",
                      {"competitor_id": competitor.id, "backend": competitor.backend,
-                      "error": str(exc)[:500]})
+                      "error": (call.error or "")[:500]})
 
     universe = _clean_universe(raw.get("universe"))
     fellback = not universe
@@ -162,6 +161,7 @@ def generate_mandate(competitor: Competitor) -> dict[str, Any]:
         "rationale": rationale,
         "raw": raw,
         "fellback": fellback,
+        "paused": call.quota_blocked,
     }
 
 
@@ -217,7 +217,11 @@ def ensure_mandate(
     Idempotent within a week: an existing mandate is returned untouched unless
     `force=True`, so re-running the weekly planner is cheap (no backend call).
     Returns a summary dict: {competitor_id, week_start, universe, rationale,
-    created (bool), fellback (bool)}.
+    created (bool), fellback (bool), paused (bool)}.
+
+    If the backend is quota-paused, NO mandate is persisted (created=False,
+    paused=True) — the runner's own WATCHLIST fallback covers the week and the
+    next planning run can set the real mandate once quota frees up.
     """
     wk = wk_start or current_week_start()
     if not force:
@@ -230,9 +234,21 @@ def ensure_mandate(
                 "rationale": existing["rationale"] or "",
                 "created": False,
                 "fellback": False,
+                "paused": False,
             }
 
     plan = generate_mandate(competitor)
+    if plan["paused"]:
+        return {
+            "competitor_id": competitor.id,
+            "week_start": wk.isoformat(),
+            "universe": [],
+            "rationale": "",
+            "created": False,
+            "fellback": False,
+            "paused": True,
+        }
+
     persist_mandate(
         competitor.id, plan["universe"], plan["strategy_config"],
         plan["rationale"], plan["raw"], wk_start=wk,
@@ -250,6 +266,7 @@ def ensure_mandate(
         "rationale": plan["rationale"],
         "created": True,
         "fellback": plan["fellback"],
+        "paused": False,
     }
 
 
