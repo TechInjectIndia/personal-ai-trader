@@ -287,3 +287,82 @@ CREATE TABLE IF NOT EXISTS metrics_snapshots (
 );
 CREATE INDEX IF NOT EXISTS metrics_recent
     ON metrics_snapshots (snapshot_ts DESC);
+
+
+-- ─── Competition league ───────────────────────────────────────────────
+-- Multiple agents (each a distinct LLM backend / model / persona) compete
+-- on the same market data, each with its own isolated cash pool. The
+-- existing single-portfolio bot is modelled as competitor 'house-claude'.
+-- All additions here are ADDITIVE: existing tables gain a NULLABLE
+-- competitor_id column (no FK, no default) so legacy rows and cron inserts
+-- that don't set it keep working unchanged.
+
+CREATE TABLE IF NOT EXISTS competitors (
+    id              TEXT PRIMARY KEY,                 -- stable slug, e.g. 'house-claude'
+    name            TEXT,                             -- human display name
+    backend         TEXT,                             -- 'claude' | 'gemini' | 'qwen' | ...
+    model           TEXT,                             -- concrete model id
+    persona         TEXT,                             -- short style/strategy description
+    autonomy_level  TEXT,                             -- 'freestyle' | 'incumbent' | ...
+    status          TEXT,                             -- 'active' | 'paused' | 'retired'
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- One isolated wallet per competitor (PK = competitor_id, 1:1).
+CREATE TABLE IF NOT EXISTS competitor_wallets (
+    competitor_id       TEXT PRIMARY KEY REFERENCES competitors(id),
+    initial_capital_inr NUMERIC(12, 2),
+    available_inr       NUMERIC(12, 2),
+    realized_pnl_inr    NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Weekly trading mandate per competitor (universe + strategy config), as
+-- produced by that competitor's planner. One mandate per (competitor, week).
+CREATE TABLE IF NOT EXISTS competitor_mandates (
+    id              BIGSERIAL PRIMARY KEY,
+    competitor_id   TEXT REFERENCES competitors(id),
+    week_start      DATE,
+    universe        JSONB,                            -- array of symbols
+    strategy_config JSONB,                            -- strategy params for the week
+    rationale       TEXT,                             -- plain-English reasoning
+    raw             JSONB,                            -- raw planner payload
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS competitor_mandates_week
+    ON competitor_mandates (competitor_id, week_start);
+
+-- Every backend invocation (one LLM call) traced for audit + quota analysis.
+CREATE TABLE IF NOT EXISTS agent_invocations (
+    id              BIGSERIAL PRIMARY KEY,
+    competitor_id   TEXT REFERENCES competitors(id),
+    ts              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    backend         TEXT,
+    model           TEXT,
+    prompt          TEXT,
+    raw_output      TEXT,
+    latency_ms      INTEGER,
+    ok              BOOLEAN,
+    error           TEXT
+);
+CREATE INDEX IF NOT EXISTS agent_invocations_by_competitor
+    ON agent_invocations (competitor_id, ts DESC);
+
+-- Per-backend rolling quota state so the league can throttle / pause a
+-- backend that's hit its rate or usage window.
+CREATE TABLE IF NOT EXISTS backend_quota_state (
+    backend         TEXT PRIMARY KEY,
+    window_start    TIMESTAMPTZ,
+    calls_used      INTEGER NOT NULL DEFAULT 0,
+    paused_until    TIMESTAMPTZ
+);
+
+-- Tag existing operational tables with an optional competitor dimension.
+-- NULLABLE + no FK + no default on purpose: existing rows stay valid and the
+-- single-portfolio cron path (which doesn't set competitor_id) is unaffected.
+-- The migrate_competition.py backfill stamps legacy rows as 'house-claude'.
+ALTER TABLE signals          ADD COLUMN IF NOT EXISTS competitor_id TEXT;
+ALTER TABLE decisions        ADD COLUMN IF NOT EXISTS competitor_id TEXT;
+ALTER TABLE paper_trades     ADD COLUMN IF NOT EXISTS competitor_id TEXT;
+ALTER TABLE daily_state      ADD COLUMN IF NOT EXISTS competitor_id TEXT;
+ALTER TABLE metrics_snapshots ADD COLUMN IF NOT EXISTS competitor_id TEXT;
