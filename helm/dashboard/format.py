@@ -17,6 +17,7 @@ to wrap via CSS, hence this helper.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
@@ -137,6 +138,18 @@ def wrapped_table(
         dense detail logs. ``clamp_cols`` still ellipsize their long columns.
     """
     html = df.to_html(index=False, escape=True, border=0)
+    # Native hover tooltip on every body cell → the full value shows on hover,
+    # so clamped / long free-text columns (Reason, Rationale, Reasoning, Why,
+    # Summary…) are recoverable without widening the row. Content is already
+    # HTML-escaped by to_html; only `"` needs escaping for the attribute, and
+    # cells never contain a raw `<` (escaped to &lt;), so `[^<]*` is safe.
+    def _add_title(m: "re.Match[str]") -> str:
+        c = m.group(1)
+        if not c:
+            return m.group(0)
+        return f'<td title="{c.replace(chr(34), "&quot;")}">{c}</td>'
+
+    html = re.sub(r"<td>([^<]*)</td>", _add_title, html)
     cols = list(df.columns)
     rules: list[str] = []
     tid = "t" + uuid.uuid4().hex[:8]
