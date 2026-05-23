@@ -44,3 +44,6 @@ backups/
 
 # graphify knowledge-graph build artifacts (rebuilt locally by post-commit hook)
 graphify-out/
+
+# Streamlit static-served copy of the System Map graph (generated at runtime)
+helm/dashboard/static/

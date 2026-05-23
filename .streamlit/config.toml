@@ -17,6 +17,10 @@ chartSequentialColors = ["#1E2A4A", "#33407A", "#4F46E5", "#6366F1", "#818CF8", 
 [server]
 headless = true
 enableXsrfProtection = true
+# Serve helm/dashboard/static/* at /app/static/* — used to embed the System Map
+# knowledge graph via st.iframe (a real file URL renders reliably; the legacy
+# components.html srcdoc shim is broken in Streamlit 1.57).
+enableStaticServing = true
 
 [browser]
 gatherUsageStats = false

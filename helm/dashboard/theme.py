@@ -87,8 +87,10 @@ code, kbd, pre, [data-testid="stCode"] * { font-family: 'JetBrains Mono', monosp
 /* ── hide default Streamlit chrome for a product feel ─────────────── */
 /* The smooth-scroll injector (a 0-height components.html iframe) is a flex
    item in the main block, so even at 0 height it consumes the block's `gap`
-   and pushes content down. Pull it out of flow (it still runs its script). */
-[data-testid="stElementContainer"]:has(> [data-testid="stIFrame"]) {
+   and pushes content down. Pull it out of flow (it still runs its script).
+   Scope to srcdoc injectors only (`:not([src])`) so real embedded iframes
+   (e.g. the System Map graph via st.iframe, which sets `src`) are NOT collapsed. */
+[data-testid="stElementContainer"]:has(> [data-testid="stIFrame"]:not([src])) {
   position: absolute !important; height: 0 !important; width: 0 !important;
   margin: 0 !important; overflow: hidden !important; pointer-events: none;
 }

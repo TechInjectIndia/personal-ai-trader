@@ -23,7 +23,6 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 from helm.dashboard.format import wrapped_table
 from helm.dashboard.theme import apply_theme, kpi_card, kpi_grid, page_header
@@ -34,6 +33,15 @@ IST = ZoneInfo("Asia/Kolkata")
 GRAPHIFY_DIR = Path(__file__).resolve().parents[3] / "graphify-out"
 GRAPH_HTML = GRAPHIFY_DIR / "graph.html"
 GRAPH_JSON = GRAPHIFY_DIR / "graph.json"
+
+# Streamlit static-serving dir (next to the app.py entrypoint) → served at
+# /app/static/. We publish the inlined graph here and embed it with st.iframe;
+# a real file URL renders reliably, unlike the legacy components.html srcdoc.
+STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
+STATIC_GRAPH = STATIC_DIR / "system_map.html"
+# Absolute path — a relative URL would resolve against the /system-map route and
+# miss the static handler (Streamlit then shows its "page not found" modal).
+STATIC_URL = "/app/static/system_map.html"
 
 # graphify's graph.html pulls the vis-network lib from this CDN. We inline it
 # server-side (below) so the embed renders even when the client browser can't
@@ -77,6 +85,17 @@ def _graph_html() -> str:
     if js:
         html = html.replace(_VIS_CDN_TAG, f"<script>{js}</script>")
     return html
+
+
+def _publish_static_graph() -> bool:
+    """Write the inlined graph into the static dir if stale. False if no graph."""
+    if not GRAPH_HTML.exists():
+        return False
+    STATIC_DIR.mkdir(parents=True, exist_ok=True)
+    if (not STATIC_GRAPH.exists()
+            or STATIC_GRAPH.stat().st_mtime < GRAPH_HTML.stat().st_mtime):
+        STATIC_GRAPH.write_text(_graph_html(), encoding="utf-8")
+    return True
 
 
 def _degrees(g: dict) -> Counter:
@@ -149,11 +168,12 @@ kpi_grid([
 ])
 
 st.write("")
-# Render the interactive graph at the top level — components iframes nested in
-# st.tabs collapse to zero height, so the graph gets its own full-width block.
 st.caption("Drag to pan · scroll to zoom · click a node to focus. Colours are "
            "communities; node size scales with how connected it is.")
-components.html(_graph_html(), height=760, scrolling=True)
+if _publish_static_graph():
+    st.iframe(STATIC_URL, height=760)
+else:
+    st.info("Graph file missing — it rebuilds on the next commit via the post-commit hook.")
 
 st.write("")
 tab_gods, tab_subs = st.tabs(["⭐ God nodes", "🧩 Subsystems"])
