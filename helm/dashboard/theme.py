@@ -361,68 +361,64 @@ _LENIS_VERSION = "1.1.14"
 _SMOOTH_SCROLL_JS = """
 <script>
 (function () {
-  var pwin, pdoc;
-  try { pwin = window.parent; pdoc = pwin.document; } catch (e) { return; }
+  var pwin;
+  try { pwin = window.parent; } catch (e) { return; }
+  // Install the controller ONCE, and run it in the PARENT document. Critical:
+  // Streamlit recreates this component iframe on every rerun / route change. If
+  // the rAF loop & URL poll live in the iframe realm, that teardown kills them
+  // while the on-parent guard flags persist — Lenis exists but nothing drives
+  // its raf(), so scroll freezes after the first SPA navigation. Living in the
+  // parent realm, the loop + poll + Lenis instance survive iframe churn.
+  if (pwin.__helmScrollInstalled) return;
+  pwin.__helmScrollInstalled = true;
 
-  function els() {
-    return {
-      w: pdoc.querySelector('[data-testid="stMain"]'),
-      c: pdoc.querySelector('[data-testid="stMainBlockContainer"]')
-    };
-  }
-
-  // Bind (or rebind) Lenis to the *current* scroll wrapper + content. Streamlit's
-  // SPA page switch swaps the content node, leaving an old Lenis bound to a
-  // detached element ("scroll works on first page, breaks after route change
-  // until refresh") — so we rebind whenever those nodes change identity.
-  function bind() {
-    if (!pwin.Lenis) return false;
-    var e = els();
-    if (!e.w) return false;
-    var cur = pwin.__helmLenis;
-    if (cur && cur.__w === e.w && cur.__c === e.c) { cur.resize(); return true; }
-    if (cur) { try { cur.destroy(); } catch (x) {} }
-    var lenis = new pwin.Lenis({
-      wrapper: e.w, content: e.c || e.w,
-      duration: 1.05,
-      easing: function (t) { return Math.min(1, 1.001 - Math.pow(2, -10 * t)); },
-      smoothWheel: true, gestureOrientation: 'vertical'
-    });
-    lenis.__w = e.w; lenis.__c = e.c;
-    pwin.__helmLenis = lenis;
-    if (!pwin.__helmRaf) {   // one rAF loop, always driving the current instance
-      pwin.__helmRaf = true;
-      (function raf(t) {
-        if (pwin.__helmLenis) pwin.__helmLenis.raf(t);
-        pwin.requestAnimationFrame(raf);
-      })();
+  function CONTROLLER() {
+    var W = window, D = document;   // parent window/document when this runs
+    function els() {
+      return {
+        w: D.querySelector('[data-testid="stMain"]'),
+        c: D.querySelector('[data-testid="stMainBlockContainer"]')
+      };
     }
-    return true;
+    function destroy() {            // tear the old instance down — no listener leak
+      if (W.__helmLenis) { try { W.__helmLenis.destroy(); } catch (e) {} W.__helmLenis = null; }
+    }
+    function create() {             // fresh Lenis bound to the current wrapper+content
+      if (!W.Lenis) return false;
+      var e = els(); if (!e.w) return false;
+      destroy();
+      var lenis = new W.Lenis({
+        wrapper: e.w, content: e.c || e.w,
+        duration: 1.05,
+        easing: function (t) { return Math.min(1, 1.001 - Math.pow(2, -10 * t)); },
+        smoothWheel: true, gestureOrientation: 'vertical'
+      });
+      lenis.__w = e.w; lenis.__c = e.c; W.__helmLenis = lenis;
+      return true;
+    }
+    function bootCreate() { if (!create()) W.setTimeout(bootCreate, 150); }
+    function raf(t) { if (W.__helmLenis) W.__helmLenis.raf(t); W.requestAnimationFrame(raf); }
+    W.requestAnimationFrame(raf);   // single persistent rAF loop (parent realm)
+    var path = W.location.pathname; // SPA pushState nav → reattach Lenis to the new page
+    W.setInterval(function () {
+      if (W.location.pathname !== path) {
+        path = W.location.pathname;
+        destroy();                  // native overflow:auto scroll works in the gap
+        W.setTimeout(bootCreate, 400);
+      }
+    }, 150);
+    if (W.Lenis) { bootCreate(); }
+    else {
+      var sc = D.createElement('script');
+      sc.src = 'https://cdn.jsdelivr.net/npm/lenis@__VER__/dist/lenis.min.js';
+      sc.onload = bootCreate;
+      D.head.appendChild(sc);
+    }
   }
 
-  // Watch the (persistent) app root for the content-node swap that a route
-  // change performs, and rebind. childList-only, so Lenis's own transforms
-  // (style mutations) never retrigger it; debounced so renders stay cheap.
-  function watch() {
-    if (pwin.__helmObs) return;
-    var root = pdoc.querySelector('[data-testid="stApp"]');
-    if (!root) return setTimeout(watch, 200);
-    var t = null;
-    pwin.__helmObs = new pwin.MutationObserver(function () {
-      if (t) pwin.clearTimeout(t);
-      t = pwin.setTimeout(bind, 180);
-    });
-    pwin.__helmObs.observe(root, { childList: true, subtree: true });
-  }
-
-  function boot() { if (!bind()) return setTimeout(boot, 150); watch(); }
-
-  if (pwin.Lenis) { boot(); return; }
-  var s = pdoc.createElement('script');
-  s.src = 'https://cdn.jsdelivr.net/npm/lenis@__VER__/dist/lenis.min.js';
-  s.onload = boot;
-  s.onerror = function () {};
-  pdoc.head.appendChild(s);
+  var s = pwin.document.createElement('script');
+  s.textContent = '(' + CONTROLLER.toString() + ')();';
+  pwin.document.head.appendChild(s);
 })();
 </script>
 """.replace("__VER__", _LENIS_VERSION)
