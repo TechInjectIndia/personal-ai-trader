@@ -26,6 +26,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -45,6 +46,8 @@ _TWOFA_URL = "https://kite.zerodha.com/api/twofa"
 _CONNECT_URL = "https://kite.zerodha.com/connect/login"
 _USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) helm-auto-login/1.0"
 _REDIRECT_HOPS = 10
+_MAX_ATTEMPTS = 3       # transient network / TOTP-boundary blips shouldn't page anyone
+_RETRY_BACKOFF_S = 5
 
 
 def _require(name: str) -> str:
@@ -130,6 +133,22 @@ def _restart_dashboard() -> None:
         print(f"warn: pm2 restart helm-dashboard skipped ({exc})", file=sys.stderr)
 
 
+def _one_attempt(api_key: str, api_secret: str, user_id: str, password: str,
+                 totp_secret: str) -> dict:
+    """Run the full headless login once and return the generate_session payload.
+
+    A fresh session and a freshly-generated TOTP code per call, so a retry after
+    a 30-second TOTP rollover or a dropped connection starts clean.
+    """
+    session = requests.Session()
+    session.headers["User-Agent"] = _USER_AGENT
+    request_id = _login(session, user_id, password)
+    _twofa(session, user_id, request_id, pyotp.TOTP(totp_secret).now())
+    request_token = _capture_request_token(session, api_key)
+    kite = KiteConnect(api_key=api_key)
+    return kite.generate_session(request_token, api_secret=api_secret)
+
+
 def main() -> None:
     api_key = _require("KITE_API_KEY")
     api_secret = _require("KITE_API_SECRET")
@@ -137,20 +156,25 @@ def main() -> None:
     password = _require("KITE_PASSWORD")
     totp_secret = _require("KITE_TOTP_SECRET")
 
-    totp_code = pyotp.TOTP(totp_secret).now()
+    data = None
+    last_exc: Exception | None = None
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            data = _one_attempt(api_key, api_secret, user_id, password, totp_secret)
+            break
+        except Exception as exc:  # noqa: BLE001 — any failure is retryable here
+            last_exc = exc
+            print(f"attempt {attempt}/{_MAX_ATTEMPTS} failed: {exc}", file=sys.stderr)
+            if attempt < _MAX_ATTEMPTS:
+                time.sleep(_RETRY_BACKOFF_S)
 
-    session = requests.Session()
-    session.headers["User-Agent"] = _USER_AGENT
-
-    try:
-        request_id = _login(session, user_id, password)
-        _twofa(session, user_id, request_id, totp_code)
-        request_token = _capture_request_token(session, api_key)
-        kite = KiteConnect(api_key=api_key)
-        data = kite.generate_session(request_token, api_secret=api_secret)
-    except Exception as exc:
-        insert_audit("kite_auto_login", "failed", {"error": str(exc)[:500]})
-        sys.exit(f"kite_auto_login failed: {exc}")
+    if data is None:
+        insert_audit(
+            "kite_auto_login",
+            "failed",
+            {"error": str(last_exc)[:500], "attempts": _MAX_ATTEMPTS},
+        )
+        sys.exit(f"kite_auto_login failed after {_MAX_ATTEMPTS} attempts: {last_exc}")
 
     access_token = data["access_token"]
     _persist_access_token(access_token)
