@@ -41,3 +41,6 @@ secrets.yaml
 # Backups
 *.bak
 backups/
+
+# graphify knowledge-graph build artifacts (rebuilt locally by post-commit hook)
+graphify-out/
