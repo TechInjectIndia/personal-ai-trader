@@ -1,5 +1,5 @@
 """
-Architecture Graph page — live knowledge-graph view of the codebase.
+System Map page — live knowledge-graph view of the codebase.
 
 Renders the graphify-built knowledge graph inline so you can explore the system's
 structure straight from the dashboard: every function/module, the call & import
@@ -15,6 +15,7 @@ If the graph hasn't been built yet, the page explains how (one command).
 from __future__ import annotations
 
 import json
+import urllib.request
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -34,9 +35,15 @@ GRAPHIFY_DIR = Path(__file__).resolve().parents[3] / "graphify-out"
 GRAPH_HTML = GRAPHIFY_DIR / "graph.html"
 GRAPH_JSON = GRAPHIFY_DIR / "graph.json"
 
-st.set_page_config(page_title="Helm — Architecture Graph", page_icon="🗺️", layout="wide")
+# graphify's graph.html pulls the vis-network lib from this CDN. We inline it
+# server-side (below) so the embed renders even when the client browser can't
+# reach unpkg (ad-blockers, proxies, offline).
+_VIS_URL = "https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"
+_VIS_CDN_TAG = f'<script src="{_VIS_URL}"></script>'
+
+st.set_page_config(page_title="Helm — System Map", page_icon="🗺️", layout="wide")
 apply_theme()
-page_header("Architecture Graph",
+page_header("System Map",
             "Live knowledge graph of the codebase · rebuilt on every commit", icon="🗺️")
 st.caption("A navigable map of the system — functions, modules, and the call/import "
            "edges that connect them, clustered into subsystems. Built by graphify "
@@ -49,6 +56,27 @@ def _load_graph() -> dict | None:
     if not GRAPH_HTML.exists() or not GRAPH_JSON.exists():
         return None
     return json.loads(GRAPH_JSON.read_text())
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _vis_network_js() -> str | None:
+    """Fetch the vis-network lib once (server-side), cached for a day."""
+    try:
+        with urllib.request.urlopen(_VIS_URL, timeout=10) as r:
+            js = r.read().decode("utf-8")
+        # Guard against an embedded "</script>" prematurely closing the inline tag.
+        return js.replace("</script", "<\\/script")
+    except Exception:
+        return None
+
+
+def _graph_html() -> str:
+    """The graph.html with vis-network inlined (falls back to the CDN tag)."""
+    html = GRAPH_HTML.read_text()
+    js = _vis_network_js()
+    if js:
+        html = html.replace(_VIS_CDN_TAG, f"<script>{js}</script>")
+    return html
 
 
 def _degrees(g: dict) -> Counter:
@@ -121,14 +149,14 @@ kpi_grid([
 ])
 
 st.write("")
-tab_graph, tab_gods, tab_subs = st.tabs(
-    ["🗺️ Interactive graph", "⭐ God nodes", "🧩 Subsystems"]
-)
+# Render the interactive graph at the top level — components iframes nested in
+# st.tabs collapse to zero height, so the graph gets its own full-width block.
+st.caption("Drag to pan · scroll to zoom · click a node to focus. Colours are "
+           "communities; node size scales with how connected it is.")
+components.html(_graph_html(), height=760, scrolling=True)
 
-with tab_graph:
-    st.caption("Drag to pan · scroll to zoom · click a node to focus. Colours are "
-               "communities; node size scales with how connected it is.")
-    components.html(GRAPH_HTML.read_text(), height=720, scrolling=True)
+st.write("")
+tab_gods, tab_subs = st.tabs(["⭐ God nodes", "🧩 Subsystems"])
 
 with tab_gods:
     st.markdown("**The most-connected nodes — the core abstractions everything leans on.** "
