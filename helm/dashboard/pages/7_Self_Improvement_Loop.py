@@ -15,33 +15,41 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from helm.dashboard.agents import HOUSE_ID, agent_label, agent_selectbox, scope_predicate
+from helm.dashboard.theme import apply_theme, page_header
 from helm.data.store import conn
 
 st.set_page_config(page_title="Helm — Self-Improvement Loop", page_icon="🔁", layout="wide")
-st.title("Self-Improvement Loop")
+apply_theme()
+page_header("Self-Improvement Loop",
+            "PM → Engineer → Tester: the autonomous build loop", icon="🔁")
 st.caption("PM picks → Engineer ships → Tester verifies. Everything observable in one place.")
 
 
 # ─── data fetch helpers ────────────────────────────────────────────────
 
-def _latest_snapshot() -> dict | None:
+def _latest_snapshot(agent_sel: str) -> dict | None:
+    pred, params = scope_predicate(agent_sel)
     with conn() as c:
         row = c.execute(
-            "SELECT * FROM metrics_snapshots ORDER BY snapshot_ts DESC LIMIT 1"
+            f"SELECT * FROM metrics_snapshots WHERE {pred} "
+            "ORDER BY snapshot_ts DESC LIMIT 1",
+            params,
         ).fetchone()
     return dict(row) if row else None
 
 
-def _snapshot_history(days: int = 60) -> pd.DataFrame:
+def _snapshot_history(agent_sel: str, days: int = 60) -> pd.DataFrame:
+    pred, params = scope_predicate(agent_sel)
     with conn() as c:
         rows = list(c.execute(
             "SELECT snapshot_ts, equity_inr, progress_pct, win_rate_pct, "
             "       max_drawdown_inr, proposals_open, tasks_open, "
             "       releases_unverified, trades_total "
             "FROM metrics_snapshots "
-            "WHERE snapshot_ts >= now() - make_interval(days => %s) "
+            f"WHERE snapshot_ts >= now() - make_interval(days => %s) AND {pred} "
             "ORDER BY snapshot_ts ASC",
-            (days,),
+            (days, *params),
         ))
     if not rows:
         return pd.DataFrame()
@@ -50,27 +58,29 @@ def _snapshot_history(days: int = 60) -> pd.DataFrame:
     return df
 
 
-def _agent_tasks(limit: int = 25) -> pd.DataFrame:
+def _agent_tasks(agent_sel: str, limit: int = 25) -> pd.DataFrame:
+    pred, params = scope_predicate(agent_sel)
     with conn() as c:
         rows = list(c.execute(
             "SELECT id, created_ts, created_by, task_type, status, priority, "
             "       title, claimed_by, claimed_ts, release_id, error "
-            "FROM agent_tasks ORDER BY created_ts DESC LIMIT %s",
-            (limit,),
+            f"FROM agent_tasks WHERE {pred} ORDER BY created_ts DESC LIMIT %s",
+            (*params, limit),
         ))
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows)
 
 
-def _releases(limit: int = 20) -> pd.DataFrame:
+def _releases(agent_sel: str, limit: int = 20) -> pd.DataFrame:
+    pred, params = scope_predicate(agent_sel, alias="r")
     with conn() as c:
         rows = list(c.execute(
             "SELECT r.id, r.created_ts, r.commit_sha, r.status, r.summary, "
             "       r.verified_ts, r.reverted_ts, r.task_id, t.title AS task_title "
             "FROM releases r LEFT JOIN agent_tasks t ON t.id = r.task_id "
-            "ORDER BY r.created_ts DESC LIMIT %s",
-            (limit,),
+            f"WHERE {pred} ORDER BY r.created_ts DESC LIMIT %s",
+            (*params, limit),
         ))
     if not rows:
         return pd.DataFrame()
@@ -79,24 +89,27 @@ def _releases(limit: int = 20) -> pd.DataFrame:
     return df
 
 
-def _agent_runs(limit: int = 30) -> pd.DataFrame:
+def _agent_runs(agent_sel: str, limit: int = 30) -> pd.DataFrame:
+    pred, params = scope_predicate(agent_sel)
     with conn() as c:
         rows = list(c.execute(
             "SELECT id, started_ts, finished_ts, agent, invocation, "
             "       outcome, latency_ms, task_id, release_id, summary "
-            "FROM agent_runs ORDER BY started_ts DESC LIMIT %s",
-            (limit,),
+            f"FROM agent_runs WHERE {pred} ORDER BY started_ts DESC LIMIT %s",
+            (*params, limit),
         ))
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows)
 
 
-def _proposals_open_by_category() -> pd.DataFrame:
+def _proposals_open_by_category(agent_sel: str) -> pd.DataFrame:
+    pred, params = scope_predicate(agent_sel)
     with conn() as c:
         rows = list(c.execute(
             "SELECT category, COUNT(*) AS n FROM improvement_proposals "
-            "WHERE status='open' GROUP BY category ORDER BY n DESC"
+            f"WHERE status='open' AND {pred} GROUP BY category ORDER BY n DESC",
+            params,
         ))
     return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["category", "n"])
 
@@ -114,15 +127,21 @@ def _autonomy_paused() -> bool:
 
 # ─── render ────────────────────────────────────────────────────────────
 
+# The loop is per-agent (house improves code; freestyle agents tune persona /
+# strategy_config). Scope every panel to the selected agent (default: house).
+agent_sel, _agent_names = agent_selectbox(default=HOUSE_ID)
+st.caption(f"Loop activity for **{agent_label(agent_sel, _agent_names)}**.")
+
 paused = _autonomy_paused()
 if paused:
     st.error("⏸️  Autonomy paused — Tester or human halted the loop. "
              "Check agent_runs for the cause.")
 
-latest = _latest_snapshot()
+latest = _latest_snapshot(agent_sel)
 if not latest:
-    st.warning("No metrics snapshots yet. The first one lands at 15:35 IST today; "
-               "run `python scripts/snapshot_metrics.py` for an immediate sample.")
+    st.warning(f"No metrics snapshots yet for {agent_label(agent_sel, _agent_names)}. "
+               "The first one lands at 15:35 IST today; run "
+               "`python scripts/snapshot_metrics.py` for an immediate sample.")
     st.stop()
 
 # ─── 1. Goal progress ─────────────────────────────────────────────────
@@ -136,7 +155,7 @@ c3.metric("Win rate",
           delta=f"{latest['trades_total']} trades")
 c4.metric("Max drawdown", f"₹{float(latest['max_drawdown_inr']):,.0f}")
 
-hist = _snapshot_history()
+hist = _snapshot_history(agent_sel)
 if not hist.empty:
     initial = float(latest["initial_capital_inr"])
     goal = float(latest["goal_capital_inr"])
@@ -154,14 +173,14 @@ qcol1.metric("Improvement proposals (open)", latest["proposals_open"])
 qcol2.metric("Agent tasks (open/in-progress)", latest["tasks_open"])
 qcol3.metric("Releases unverified", latest["releases_unverified"])
 
-prop_df = _proposals_open_by_category()
+prop_df = _proposals_open_by_category(agent_sel)
 if not prop_df.empty:
     st.caption("Open proposals by category")
     st.bar_chart(prop_df.set_index("category"))
 
 # ─── 3. Releases timeline ─────────────────────────────────────────────
 st.subheader("Releases")
-rel_df = _releases()
+rel_df = _releases(agent_sel)
 if rel_df.empty:
     st.caption("No releases yet — the Engineer agent ships them as tasks complete.")
 else:
@@ -178,7 +197,7 @@ else:
 
 # ─── 4. Agent runs ────────────────────────────────────────────────────
 st.subheader("Recent agent runs")
-runs_df = _agent_runs()
+runs_df = _agent_runs(agent_sel)
 if runs_df.empty:
     st.caption("No agent runs yet.")
 else:
@@ -188,7 +207,7 @@ else:
 
 # ─── 5. Open tasks table ──────────────────────────────────────────────
 st.subheader("Open / in-progress tasks")
-tasks_df = _agent_tasks()
+tasks_df = _agent_tasks(agent_sel)
 if tasks_df.empty:
     st.caption("Queue empty.")
 else:

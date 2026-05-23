@@ -21,10 +21,12 @@ from helm.config import (
     live_wallet_config,
 )
 from helm.dashboard.format import fmt_ist, wrapped_table
+from helm.dashboard.theme import apply_theme, page_header
 from helm.data.store import all_settings, conn, insert_audit, set_setting
 
 st.set_page_config(page_title="Helm — Settings", page_icon="⚙️", layout="wide")
-st.title("Settings")
+apply_theme()
+page_header("Settings", "Live risk limits and runtime configuration", icon="⚙️")
 st.caption(
     "Risk limits stored in Postgres. Cron scripts re-read on every run — "
     "no PM2 restart needed. Empty fields fall back to code defaults."

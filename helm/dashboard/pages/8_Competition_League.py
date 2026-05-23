@@ -25,10 +25,13 @@ from helm.competition.leaderboard import leaderboard
 from helm.competition.mandate import current_mandate, current_week_start
 from helm.competition.quota import quota_status
 from helm.data.store import conn
-from helm.dashboard.format import fmt_ist
+from helm.dashboard.format import fmt_ist, wrapped_table
+from helm.dashboard.theme import apply_theme, kpi_card, kpi_grid, page_header
 
 st.set_page_config(page_title="Helm — Competition League", page_icon="🏆", layout="wide")
-st.title("Competition League")
+apply_theme()
+page_header("Competition League",
+            "Five AI agents · ₹50k each · one human judge", icon="🏆")
 st.caption("Five AI agents, five isolated ₹50k wallets, same market. "
            "Judge them on equity AND on how they reason.")
 
@@ -56,31 +59,36 @@ if not rows:
     st.stop()
 
 leader = rows[0]
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("🥇 Leader", leader.name, delta=f"₹{float(leader.equity):,.0f} equity")
-c2.metric("Leader P&L", f"₹{float(leader.realised_net_pnl):,.0f}",
-          delta=f"{leader.progress_pct:+.1f}% vs start")
 active_trades = sum(r.open_positions for r in rows)
-c3.metric("Open positions (all)", active_trades)
 total_trades = sum(r.trades for r in rows)
-c4.metric("Trades booked (all)", total_trades)
+_lead_pnl = float(leader.realised_net_pnl)
+kpi_grid([
+    kpi_card("Leader", leader.name, icon="medal",
+             sub=f"₹{float(leader.equity):,.0f} equity", sub_kind="info"),
+    kpi_card("Leader P&L", f"₹{_lead_pnl:,.0f}", icon="wallet",
+             sub=f"{leader.progress_pct:+.1f}% vs start",
+             sub_kind="pos" if _lead_pnl >= 0 else "neg"),
+    kpi_card("Open positions (all)", f"{active_trades}", icon="folder"),
+    kpi_card("Trades booked (all)", f"{total_trades}", icon="repeat"),
+])
 
 st.subheader("Standings")
 table = pd.DataFrame([{
     "#": r.rank,
-    "competitor": r.name,
-    "backend": r.backend,
-    "type": r.autonomy_level,
-    "status": r.status,
-    "equity ₹": round(float(r.equity)),
-    "P&L ₹": round(float(r.realised_net_pnl)),
-    "prog %": round(r.progress_pct, 1),
-    "open": r.open_positions,
-    "trades": r.trades,
-    "win %": round(r.win_rate_pct, 0) if r.win_rate_pct is not None else None,
-    "available ₹": round(float(r.available)),
+    "Competitor": r.name,
+    "Backend": r.backend,
+    "Type": r.autonomy_level,
+    "Status": r.status,
+    "Equity ₹": f"{float(r.equity):,.0f}",
+    "P&L ₹": f"{float(r.realised_net_pnl):,.0f}",
+    "Prog %": f"{r.progress_pct:+.1f}",
+    "Open": r.open_positions,
+    "Trades": r.trades,
+    "Win %": f"{r.win_rate_pct:.0f}" if r.win_rate_pct is not None else "—",
+    "Available ₹": f"{float(r.available):,.0f}",
 } for r in rows])
-st.dataframe(table, use_container_width=True, hide_index=True)
+wrapped_table(table, right_align=["Equity ₹", "P&L ₹", "Prog %", "Open",
+                                  "Trades", "Win %", "Available ₹"])
 
 # ─── 2. Equity bar ─────────────────────────────────────────────────────
 st.subheader("Equity by competitor")
@@ -158,12 +166,12 @@ if not quotas:
     st.caption("No backend calls recorded yet — quotas populate on first use.")
 else:
     qdf = pd.DataFrame([{
-        "backend": q["backend"],
-        "used / max": f"{q['calls_used']} / {q['max_calls']}",
-        "window (min)": q["window_minutes"],
-        "paused": "⏸️ until " + fmt_ist(q["paused_until"]) if q["paused"] else "—",
+        "Backend": q["backend"],
+        "Used / max": f"{q['calls_used']} / {q['max_calls']}",
+        "Window (min)": q["window_minutes"],
+        "Paused": "⏸️ until " + fmt_ist(q["paused_until"]) if q["paused"] else "—",
     } for q in quotas])
-    st.dataframe(qdf, use_container_width=True, hide_index=True)
+    wrapped_table(qdf, right_align=["Window (min)"])
 
 with st.expander("How this page is wired"):
     st.markdown(

@@ -21,11 +21,13 @@ from helm.config import (
     live_risk_limits,
 )
 from helm.dashboard.format import wrapped_table
+from helm.dashboard.theme import apply_theme, page_header
 
 RISK = live_risk_limits()
 
 st.set_page_config(page_title="Helm — How it works", page_icon="📘", layout="wide")
-st.title("How this bot works")
+apply_theme()
+page_header("How It Works", "A plain-English tour of the bot's machinery", icon="📘")
 st.caption("Plain-English explanation. No tech or finance jargon required.")
 
 # ───────────────────────── 1. one-paragraph summary ─────────────────────────

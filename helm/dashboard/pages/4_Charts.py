@@ -19,13 +19,16 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from helm.config import MARKET_OPEN, WATCHLIST
+from helm.dashboard.agents import HOUSE_ID, agent_label, agent_selectbox, scope_predicate
 from helm.dashboard.format import wrapped_table
+from helm.dashboard.theme import apply_theme, page_header
 from helm.data.store import conn
 
 IST = ZoneInfo("Asia/Kolkata")
 
 st.set_page_config(page_title="Helm — Charts", page_icon="📈", layout="wide")
-st.title("Charts — candles + strategy overlays")
+apply_theme()
+page_header("Charts", "Candles with strategy overlays, signals and trades", icon="📈")
 st.caption(
     "1-minute candlesticks for the selected stock and day. Signal markers show "
     "where strategies fired, and orange dashed lines mark the 15-minute Opening "
@@ -33,10 +36,13 @@ st.caption(
 )
 
 # ───────────────────────── controls ─────────────────────────
-c1, c2, c3 = st.columns([1, 1, 2])
+# Candles are market-wide; signals & trades are per-agent, so the Agent
+# selector overlays one competitor's activity at a time (default: house).
+c1, c2, c3, c4 = st.columns([1, 1, 1.2, 1.5])
 symbol = c1.selectbox("Stock", WATCHLIST, index=0)
 day = c2.date_input("Date", date.today(), max_value=date.today())
-show_orb = c3.checkbox("Show 15-min Opening Range overlay", value=True)
+agent_sel, _agent_names = agent_selectbox(container=c3, default=HOUSE_ID)
+show_orb = c4.checkbox("Show 15-min ORB overlay", value=True)
 
 
 # ───────────────────────── data ─────────────────────────
@@ -64,44 +70,48 @@ def fetch_candles(symbol: str, day: date) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=10, show_spinner=False)
-def fetch_signals(symbol: str, day: date) -> list[dict]:
+def fetch_signals(symbol: str, day: date, agent_sel: str) -> list[dict]:
     start_ist = datetime.combine(day, time(0, 0), tzinfo=IST)
     end_ist = start_ist + timedelta(days=1)
+    pred, params = scope_predicate(agent_sel, alias="s")
     with conn() as c:
         return list(c.execute(
-            """
+            f"""
             SELECT s.id, s.ts, s.strategy, s.side, s.entry_price, s.stop_loss,
                    s.target, s.consumed, s.rationale,
                    d.verdict, d.reasoning AS d_reason
             FROM signals s
             LEFT JOIN decisions d ON d.signal_id = s.id
             WHERE s.symbol = %s AND s.ts >= %s AND s.ts < %s
+              AND {pred}
             ORDER BY s.ts ASC
             """,
-            (symbol, start_ist, end_ist),
+            (symbol, start_ist, end_ist, *params),
         ))
 
 
 @st.cache_data(ttl=10, show_spinner=False)
-def fetch_trades(symbol: str, day: date) -> list[dict]:
+def fetch_trades(symbol: str, day: date, agent_sel: str) -> list[dict]:
     start_ist = datetime.combine(day, time(0, 0), tzinfo=IST)
     end_ist = start_ist + timedelta(days=1)
+    pred, params = scope_predicate(agent_sel)
     with conn() as c:
         return list(c.execute(
-            """
+            f"""
             SELECT id, side, qty, entry_price, exit_price, entry_ts, exit_ts,
                    stop_loss, target, exit_reason, pnl_inr, status
             FROM paper_trades
             WHERE symbol = %s AND entry_ts >= %s AND entry_ts < %s
+              AND {pred}
             ORDER BY entry_ts ASC
             """,
-            (symbol, start_ist, end_ist),
+            (symbol, start_ist, end_ist, *params),
         ))
 
 
 candles = fetch_candles(symbol, day)
-signals = fetch_signals(symbol, day)
-trades = fetch_trades(symbol, day)
+signals = fetch_signals(symbol, day, agent_sel)
+trades = fetch_trades(symbol, day, agent_sel)
 
 if candles.empty:
     st.warning(f"No candles for {symbol} on {day.isoformat()}. "
@@ -203,8 +213,12 @@ fig.update_layout(
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     margin=dict(l=20, r=20, t=20, b=20),
     hovermode="x unified",
+    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+    font=dict(family="Inter, sans-serif", color="#94A2B8"),
 )
-st.plotly_chart(fig, use_container_width=True)
+fig.update_xaxes(gridcolor="rgba(255,255,255,0.06)", zeroline=False)
+fig.update_yaxes(gridcolor="rgba(255,255,255,0.06)", zeroline=False)
+st.plotly_chart(fig, use_container_width=True, theme="streamlit")
 
 # ───────────────────────── side-tables ─────────────────────────
 st.subheader("Signals on this day")
@@ -250,6 +264,6 @@ else:
 
 st.divider()
 st.caption(
-    f"{len(candles)} candle(s) · {len(signals)} signal(s) · "
-    f"{len(trades)} trade(s) · cached 10s"
+    f"Agent: {agent_label(agent_sel, _agent_names)} · {len(candles)} candle(s) · "
+    f"{len(signals)} signal(s) · {len(trades)} trade(s) · candles are market-wide · cached 10s"
 )

@@ -18,12 +18,14 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 from helm.dashboard.format import wrapped_table
+from helm.dashboard.theme import apply_theme, page_header
 from helm.data.store import conn
 
 IST = ZoneInfo("Asia/Kolkata")
 
 st.set_page_config(page_title="Helm — Activity Log", page_icon="📡", layout="wide")
-st.title("Activity Log — what each helper is doing")
+apply_theme()
+page_header("Activity Log", "What each helper is doing, minute by minute", icon="📡")
 
 # ───────────────────────── controls ─────────────────────────
 top_l, top_r = st.columns([3, 1])

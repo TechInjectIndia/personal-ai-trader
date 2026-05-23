@@ -17,6 +17,7 @@ to wrap via CSS, hence this helper.
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
@@ -26,6 +27,7 @@ import streamlit as st
 IST = ZoneInfo("Asia/Kolkata")
 
 _DT_FMT = "%d %b %I:%M:%S %p IST"   # "06 May 02:32:05 PM IST"
+_DT_SHORT_FMT = "%d %b %I:%M %p"    # "06 May 02:32 PM" — compact, for dense tables
 _CLOCK_FMT = "%I:%M:%S %p"          # "02:32:05 PM"
 _WINDOW_FMT = "%I:%M %p IST"        # "09:15 AM IST"
 
@@ -37,6 +39,16 @@ def fmt_ist(dt) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=IST)
     return dt.astimezone(IST).strftime(_DT_FMT)
+
+
+def fmt_ist_short(dt) -> str:
+    """Compact DB-timestamp ("06 May 02:32 PM") — for dense/narrow table cells
+    where the full ``fmt_ist`` (with seconds + IST suffix) wraps awkwardly."""
+    if dt is None or pd.isna(dt):
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=IST)
+    return dt.astimezone(IST).strftime(_DT_SHORT_FMT)
 
 
 def fmt_clock(dt: datetime | None = None) -> str:
@@ -54,31 +66,47 @@ def fmt_window(t: time) -> str:
 
 _WRAP_TABLE_CSS = """
 <style>
-div.helm-tbl { width: 100%; }
+div.helm-tbl {
+  width: 100%; border: 1px solid #232B3A; border-radius: 12px;
+  overflow-x: auto; background: #11161F;
+}
 div.helm-tbl table {
   border-collapse: collapse; width: 100%;
-  font-size: 0.875rem; font-variant-numeric: tabular-nums;
+  font-size: 0.86rem; font-variant-numeric: tabular-nums;
+  font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif;
 }
 div.helm-tbl thead th {
-  text-align: left; padding: 8px 12px; font-weight: 600;
-  background: rgba(127,127,127,0.10);
-  border-bottom: 1px solid rgba(127,127,127,0.30);
+  text-align: left; padding: 10px 14px; font-weight: 600;
+  font-size: 0.72rem; letter-spacing: 0.05em; text-transform: uppercase;
+  color: #94A2B8;
+  background: #161C27;
+  border-bottom: 1px solid #232B3A;
   position: sticky; top: 0; z-index: 1;
   white-space: nowrap;
 }
 div.helm-tbl tbody td {
-  padding: 8px 12px; vertical-align: top;
-  border-bottom: 1px solid rgba(127,127,127,0.18);
-  white-space: normal; word-break: normal; overflow-wrap: anywhere;
-  line-height: 1.4;
+  padding: 9px 14px; vertical-align: top; color: #DCE3EE;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  /* break-word (not anywhere): wrap long free-text, but never collapse a
+     short cell into one-character-per-line in a narrow column. */
+  white-space: normal; word-break: normal; overflow-wrap: break-word;
+  line-height: 1.45;
 }
-div.helm-tbl tbody tr:hover td { background: rgba(127,127,127,0.06); }
+div.helm-tbl tbody tr:nth-child(even) td { background: rgba(255,255,255,0.015); }
+div.helm-tbl tbody tr:hover td { background: rgba(99,102,241,0.08); }
 div.helm-tbl tbody tr:last-child td { border-bottom: none; }
 </style>
 """
 
 
-def wrapped_table(df: pd.DataFrame, *, height: int | None = None) -> None:
+def wrapped_table(
+    df: pd.DataFrame,
+    *,
+    height: int | None = None,
+    right_align: "set[str] | list[str] | None" = None,
+    clamp_cols: "dict[str, int] | set[str] | list[str] | None" = None,
+    single_line: bool = False,
+) -> None:
     """Render a DataFrame as a wrapping HTML table — Excel/Sheets-like cells.
 
     Drop-in replacement for ``st.dataframe(df, use_container_width=True,
@@ -96,14 +124,54 @@ def wrapped_table(df: pd.DataFrame, *, height: int | None = None) -> None:
     height : int, optional
         If given, wraps the table in a vertically scrollable box of that
         pixel height (header stays sticky). Omit to let the table grow.
+    right_align : set or list of str, optional
+        Column headers to right-align (numeric / currency columns read better
+        right-aligned). Matched against ``df.columns``.
+    clamp_cols : dict[str, int] or set/list of str, optional
+        Free-text columns (e.g. "Reasoning") to render as a single ellipsized
+        line so a long value can't blow up the row height. As a dict, maps
+        column -> max px width; as a set/list, uses a 360px default.
+    single_line : bool, default False
+        Keep every cell on one line (no wrapping); the table keeps its natural
+        width and scrolls horizontally instead of growing rows tall. Use for
+        dense detail logs. ``clamp_cols`` still ellipsize their long columns.
     """
     html = df.to_html(index=False, escape=True, border=0)
+    cols = list(df.columns)
+    rules: list[str] = []
+    tid = "t" + uuid.uuid4().hex[:8]
+
+    if single_line:
+        rules.append(f"#{tid} td{{white-space:nowrap;}}")
+    if right_align:
+        idxs = [cols.index(c) + 1 for c in right_align if c in cols]
+        if idxs:
+            sel = ",".join(
+                f"#{tid} td:nth-child({i}),#{tid} th:nth-child({i})" for i in idxs
+            )
+            rules.append(f"{sel}{{text-align:right;}}")
+    if clamp_cols:
+        widths = clamp_cols if isinstance(clamp_cols, dict) else {c: 360 for c in clamp_cols}
+        for col, px in widths.items():
+            if col in cols:
+                i = cols.index(col) + 1
+                # single ellipsized line: the cell can't grow the row height,
+                # and max-width caps it so it never dominates the table.
+                rules.append(
+                    f"#{tid} td:nth-child({i}){{max-width:{int(px)}px;white-space:nowrap;"
+                    "overflow:hidden;text-overflow:ellipsis;}"
+                )
+
+    extra = ""
+    if rules:
+        extra = f"<style>{''.join(rules)}</style>"
+        html = html.replace("<table", f'<table id="{tid}"', 1)
     inner = (
         f'<div style="max-height:{int(height)}px;overflow:auto;">{html}</div>'
         if height
         else html
     )
     st.markdown(
-        _WRAP_TABLE_CSS + f'<div class="helm-tbl">{inner}</div>',
+        _WRAP_TABLE_CSS + extra + f'<div class="helm-tbl">{inner}</div>',
         unsafe_allow_html=True,
     )

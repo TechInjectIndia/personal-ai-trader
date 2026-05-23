@@ -24,13 +24,15 @@ import pandas as pd
 import streamlit as st
 
 from helm.dashboard.format import IST, fmt_clock, fmt_ist, wrapped_table
+from helm.dashboard.theme import apply_theme, page_header
 from helm.data.store import conn
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 VENV_PYTHON = REPO_ROOT / ".venv" / "bin" / "python"
 
 st.set_page_config(page_title="Helm — Retrospectives", page_icon="🔁", layout="wide")
-st.title("Retrospectives — what we learned from each call")
+apply_theme()
+page_header("Retrospectives", "What the bot learned from every call", icon="🔁")
 st.caption(
     "After every closed trade and every skipped idea, the bot writes a plain-English "
     "review: why we acted, what happened, whether it was a good call, and what to "

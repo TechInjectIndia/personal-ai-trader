@@ -1,0 +1,22 @@
+# Helm dashboard — native Streamlit theme (dark fintech terminal).
+# This sets the base palette; fine-grained component styling (cards, pills,
+# header band, tables, buttons) lives in helm/dashboard/theme.py:apply_theme().
+# Keep the two palettes in sync if you retune colours.
+[theme]
+base = "dark"
+primaryColor = "#6366F1"
+backgroundColor = "#0B0E14"
+secondaryBackgroundColor = "#151A23"
+textColor = "#E6EDF3"
+linkColor = "#818CF8"
+font = "sans-serif"
+# Brand palette for native st.line_chart / st.bar_chart / st.area_chart series.
+chartCategoricalColors = ["#6366F1", "#22C55E", "#38BDF8", "#F59E0B", "#F43F5E", "#A78BFA"]
+chartSequentialColors = ["#1E2A4A", "#33407A", "#4F46E5", "#6366F1", "#818CF8", "#A5B4FC"]
+
+[server]
+headless = true
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
