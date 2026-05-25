@@ -803,4 +803,298 @@ def run_weekly_review(*, model: str | None = None, mode: str | None = None,
     return results
 
 
-__all__ = ["run_weekly_review"]
+# ─── backlog-drain mode (additive, flag-gated) ───────────────────────
+# A bounded, autonomous pass that clears an agent's EXISTING status='open'
+# proposal backlog. Unlike run_weekly_review it:
+#   * ignores the "nothing new since last run" + "unverified in flight" skip
+#     gates (a human explicitly nudged it),
+#   * clusters the WHOLE open backlog with the aggressive Jaccard deduper
+#     (helm.agents.backlog), not just the loose-title 30-day slice,
+#   * feeds the top-N deduped clusters to the SAME LLM machinery (SYSTEM_PROMPT,
+#     PM_SUGGESTION_SCHEMA, _validate_suggestion, create_task), so the agent
+#     itself decides accept/reject per cluster — there is NO human approval,
+#   * on ACCEPT marks the representative 'accepted' + supersedes the rest;
+#     on REJECT marks every member 'rejected'.
+# Bounded to <=3 clusters per call (same 0–3-tasks/run shape) so it drains
+# across repeated invocations rather than firing one giant LLM call.
+
+BACKLOG_MAX_CLUSTERS_DEFAULT = 3
+
+
+def _supersede_members(member_ids: list[int], representative_id: int,
+                       note: str) -> list[int]:
+    """Mark every member except the representative as 'superseded'.
+
+    Only flips rows still in 'open' (idempotent across repeated drains).
+    Returns the ids actually moved.
+    """
+    moved: list[int] = []
+    for pid in member_ids:
+        if pid == representative_id:
+            continue
+        if _apply_proposal_status(pid, "superseded", note):
+            moved.append(pid)
+    return moved
+
+
+def _reject_members(member_ids: list[int], note: str) -> list[int]:
+    """Mark every member of a cluster as 'rejected'. Returns ids moved."""
+    moved: list[int] = []
+    for pid in member_ids:
+        if _apply_proposal_status(pid, "rejected", note):
+            moved.append(pid)
+    return moved
+
+
+def _build_backlog_prompt(agent: dict, goal: GoalBrief,
+                          clusters: list) -> str:
+    """User prompt for the backlog pass — same schema as the weekly review, but
+    the input is a deduped, ranked list of clusters (each its representative +
+    recurrence + member_ids) instead of the raw 30-day proposal slice.
+
+    The LLM is told: decide PER CLUSTER. action=create_task + status='accepted'
+    to ship the representative; action=reject_proposal + status='rejected' to
+    kill the whole cluster. proposal_id MUST be a cluster's representative_id.
+    """
+    is_house = agent["id"] == HOUSE_COMPETITOR_ID
+    valid_types = list(
+        HOUSE_ENGINEER_TASK_TYPES if is_house else FREESTYLE_ENGINEER_TASK_TYPES
+    ) + ["needs_human"]
+    cluster_payload = [
+        cl.to_prompt_dict() if hasattr(cl, "to_prompt_dict") else cl
+        for cl in clusters
+    ]
+    payload = {
+        "now_ist": datetime.now(IST).strftime("%Y-%m-%d %H:%M"),
+        "mode": "backlog_drain",
+        "agent": agent,
+        "valid_task_types_for_this_agent": valid_types,
+        "goal_brief": goal.to_prompt_dict(),
+        "proposal_clusters": cluster_payload,
+        "notes": (
+            "BACKLOG-DRAIN MODE. You are clearing this agent's EXISTING open "
+            "proposal backlog, deduped into the clusters below. Decide PER "
+            "CLUSTER — one suggestion per cluster, max "
+            f"{len(cluster_payload)} suggestions total. "
+            "For each cluster set `proposal_id` to that cluster's "
+            "`representative_id` (NEVER a member id, NEVER null). "
+            "To SHIP a cluster: action='create_task', "
+            "proposal_status_change='accepted'. To KILL a cluster as "
+            "noise/already-addressed/too-costly: action='reject_proposal', "
+            "proposal_status_change='rejected'. `recurrence` (how many open "
+            "proposals collapsed into the cluster) is the strongest signal — "
+            "quote it in your rationale. "
+            + ("This is the HOUSE agent — use code task_types." if is_house else
+               "This is a FREESTYLE competitor — use ONLY persona_edit / "
+               "strategy_config_edit / needs_human.")
+        ),
+    }
+    return (
+        "Drain this agent's open-proposal backlog. Decide accept or reject for "
+        "each cluster below.\n\n"
+        "```json\n" + json.dumps(payload, indent=2, default=str) + "\n```"
+    )
+
+
+def run_backlog_drain(competitor_id: str, *, model: str | None = None,
+                      mode: str | None = None,
+                      max_clusters: int = BACKLOG_MAX_CLUSTERS_DEFAULT) -> dict:
+    """One bounded backlog-drain pass for a single agent.
+
+    Clusters the agent's whole status='open' backlog, feeds the top
+    `max_clusters` (capped at 3 to keep the 0–3-shape) to the PM's existing LLM
+    decision machinery, and applies the verdict per cluster:
+
+      * create_task → create ONE task for the representative, mark it 'accepted',
+        and supersede the cluster's other members.
+      * reject_proposal → mark every member 'rejected'.
+
+    Records an `agent_runs` row exactly like the weekly path. Returns a summary
+    dict with the same key set as `_review_one_agent` plus `clusters_seen` and
+    `proposals_superseded`. Designed to be called repeatedly (by
+    scripts/drain_backlog.py) until no open proposals remain.
+    """
+    from helm.agents.backlog import cluster_open_proposals
+
+    model = model or os.environ.get("DECIDER_MODEL", DECIDER_MODEL_DEFAULT)
+    mode = (mode or os.environ.get("LLM_MODE", "cli")).strip().lower()
+    max_clusters = max(0, min(int(max_clusters), 3))
+
+    is_house = competitor_id == HOUSE_COMPETITOR_ID
+
+    with record_run("pm", "backlog_drain", model=model, llm_mode=mode,
+                    competitor_id=competitor_id) as run:
+        all_clusters = cluster_open_proposals(competitor_id)
+        clusters = all_clusters[:max_clusters]
+
+        if not clusters:
+            run.outcome = "noop"
+            run.summary = f"[{competitor_id}] backlog empty"
+            run.add_trace(competitor_id=competitor_id, mode="backlog_drain",
+                          clusters_seen=0)
+            return {
+                "run_id": run.run_id,
+                "competitor_id": competitor_id,
+                "tasks_created": [],
+                "proposals_accepted": [],
+                "proposals_superseded": [],
+                "proposals_rejected": [],
+                "clusters_seen": 0,
+                "deferred": False,
+                "reason": "backlog empty",
+            }
+
+        agent = _agent_descriptor(competitor_id)
+        goal = build_goal_brief(competitor_id=competitor_id)
+
+        # Map representative_id → cluster so we can supersede the right members
+        # after the LLM picks a cluster by its representative_id.
+        by_rep = {cl.representative_id: cl for cl in clusters}
+
+        run.add_trace(
+            competitor_id=competitor_id,
+            mode="backlog_drain",
+            inputs={
+                "open_clusters_total": len(all_clusters),
+                "clusters_this_pass": len(clusters),
+                "cluster_summary": [
+                    {"representative_id": cl.representative_id,
+                     "recurrence": cl.recurrence,
+                     "confidence": cl.confidence,
+                     "score": cl.score,
+                     "members": len(cl.member_ids)}
+                    for cl in clusters
+                ],
+            },
+        )
+
+        user = _build_backlog_prompt(agent, goal, clusters)
+        try:
+            parsed = complete_json(
+                SYSTEM_PROMPT, user,
+                schema=PM_SUGGESTION_SCHEMA,
+                model=model, mode=mode,
+                max_tokens=PM_MAX_TOKENS,
+                temperature=PM_TEMPERATURE,
+            )
+        except LLMError as exc:
+            run.summary = f"LLM error: {str(exc)[:200]}"
+            run.add_trace(llm_error=str(exc)[:500])
+            raise
+
+        suggestions_raw = parsed.get("suggestions") or []
+        if not isinstance(suggestions_raw, list):
+            suggestions_raw = []
+        deferred_reason = str(parsed.get("deferred_reason") or "").strip()
+
+        tasks_created: list[int] = []
+        proposals_accepted: list[int] = []
+        proposals_superseded: list[int] = []
+        proposals_rejected: list[int] = []
+        rejected_for_invalid: list[dict] = []
+        handled_reps: set[int] = set()
+
+        for s in suggestions_raw[:max_clusters]:
+            if not isinstance(s, dict):
+                continue
+            ok, why = _validate_suggestion(s, is_house=is_house)
+            if not ok:
+                rejected_for_invalid.append({"suggestion": s, "reason": why})
+                continue
+
+            proposal_id = s.get("proposal_id")
+            cluster = by_rep.get(proposal_id) if proposal_id is not None else None
+            if cluster is None:
+                rejected_for_invalid.append(
+                    {"suggestion": s,
+                     "reason": f"proposal_id {proposal_id!r} is not a "
+                               "representative of any cluster this pass"})
+                continue
+            if cluster.representative_id in handled_reps:
+                rejected_for_invalid.append(
+                    {"suggestion": s,
+                     "reason": f"cluster {cluster.representative_id} already "
+                               "handled in this pass"})
+                continue
+
+            action = s["action"]
+            status_note = str(s.get("status_note") or "")
+            rep_id = cluster.representative_id
+
+            if action == "reject_proposal":
+                note = status_note or "rejected by pm (backlog drain)"
+                moved = _reject_members(cluster.member_ids, note)
+                proposals_rejected.extend(moved)
+                handled_reps.add(rep_id)
+                continue
+
+            # action == 'create_task' → ship the representative.
+            try:
+                task_id = create_task(
+                    created_by="pm",
+                    title=str(s["title"]).strip()[:200],
+                    rationale=str(s["rationale"]).strip()[:2000],
+                    task_type=s["task_type"],
+                    spec=s["spec"],
+                    proposal_id=rep_id,
+                    priority=int(s.get("priority", 3)),
+                    competitor_id=competitor_id,
+                )
+            except ValueError as exc:
+                rejected_for_invalid.append(
+                    {"suggestion": s, "reason": f"create_task: {exc}"})
+                continue
+
+            tasks_created.append(task_id)
+            handled_reps.add(rep_id)
+
+            if _apply_proposal_status(
+                    rep_id, "accepted",
+                    status_note or f"accepted by pm via task {task_id} "
+                                   "(backlog drain)"):
+                proposals_accepted.append(rep_id)
+            # Supersede the rest of the cluster regardless of whether the
+            # representative was still 'open' (it should be).
+            sup_note = (status_note
+                        or f"superseded by representative {rep_id} "
+                           f"(task {task_id}, backlog drain)")
+            proposals_superseded.extend(
+                _supersede_members(cluster.member_ids, rep_id, sup_note))
+
+        run.summary = (
+            f"[{competitor_id}] backlog: clusters={len(clusters)} "
+            f"tasks={len(tasks_created)} accepted={len(proposals_accepted)} "
+            f"superseded={len(proposals_superseded)} "
+            f"rejected={len(proposals_rejected)}"
+        )
+        run.add_trace(
+            tasks_created=tasks_created,
+            proposals_accepted=proposals_accepted,
+            proposals_superseded=proposals_superseded,
+            proposals_rejected=proposals_rejected,
+            invalid_suggestions=rejected_for_invalid,
+            deferred_reason=deferred_reason,
+        )
+        insert_audit("agents", "pm_backlog_drain_done",
+                     {"run_id": run.run_id,
+                      "competitor_id": competitor_id,
+                      "clusters_seen": len(clusters),
+                      "tasks_created": tasks_created,
+                      "proposals_accepted": proposals_accepted,
+                      "proposals_superseded": proposals_superseded,
+                      "proposals_rejected": proposals_rejected})
+
+        return {
+            "run_id": run.run_id,
+            "competitor_id": competitor_id,
+            "tasks_created": tasks_created,
+            "proposals_accepted": proposals_accepted,
+            "proposals_superseded": proposals_superseded,
+            "proposals_rejected": proposals_rejected,
+            "clusters_seen": len(clusters),
+            "deferred": False,
+            "reason": deferred_reason or "",
+        }
+
+
+__all__ = ["run_weekly_review", "run_backlog_drain"]
