@@ -63,7 +63,7 @@ SMOKE_SCHEMA = {
 _BINARIES: dict[str, str] = {
     "claude": "claude",
     "gemini": "gemini",
-    "kiro": os.environ.get("KIRO_CLI_CMD", "kiro"),
+    "kiro": os.environ.get("KIRO_CLI_CMD", "kiro-cli"),
     "opencode": "opencode",
 }
 

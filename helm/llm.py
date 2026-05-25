@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -383,91 +384,52 @@ def _adapter_opencode(system: str, user: str, *, model: str, schema: dict,
     return _parse_json(stdout)
 
 
-KIRO_DEFAULT_MODEL = "kiro-agent"
+KIRO_DEFAULT_CMD = "kiro-cli"
 
 
 def _adapter_kiro(system: str, user: str, *, model: str, schema: dict,
                   timeout_s: int) -> dict:
-    """Kiro CLI adapter (`kiro run`).
+    """Kiro CLI adapter — AWS Kiro CLI (`kiro-cli chat`), free tier.
 
     CLI CONTRACT
     ------------
-    Binary: ``kiro`` (or the path in ``KIRO_CLI_CMD`` env var).
+    Binary: ``kiro-cli`` (override via ``KIRO_CLI_CMD``). Invocation::
 
-    Invocation::
+        kiro-cli chat --no-interactive --trust-tools= --wrap never "<prompt>"
 
-        kiro run --system <system_prompt_file> --prompt <user_prompt_file> \
-                 --json --no-interactive
+    ``chat`` takes the prompt as a single positional argument, so system + user
+    are merged via ``_build_generic_prompt`` (chat has no separate system flag).
+    ``--no-interactive`` runs headless; ``--trust-tools=`` forbids ALL tool use
+    (a trading decider must never run shell/fs tools); ``--wrap never`` keeps the
+    output unwrapped. The model is left at Kiro's default ("auto") — the
+    per-competitor ``model`` value is intentionally ignored, since the free plan
+    selects the model itself.
 
-    Because Kiro has no single-argument stdin flag, both the system prompt and
-    the user prompt are written to temporary files in ``/tmp`` and passed via
-    ``--system`` / ``--prompt`` respectively.  The combined headless-orchestration
-    rules suffix (``GENERIC_CLI_RULES_SUFFIX``) is appended to the system text
-    before writing so Kiro follows the same "output only raw JSON" convention as
-    the other non-Claude CLI adapters.
+    OUTPUT
+    ------
+    Kiro draws its TUI chrome (logo, banners, tips, the ``--trust-tools`` warning
+    that literally contains ``@{MCPSERVERNAME}``, and a credits footer) to
+    **stderr**, which ``_run_cli`` discards. **stdout** carries only ANSI colour
+    codes, a ``> `` prompt echo, and the model's answer, so we strip ANSI then
+    extract the JSON tolerantly with ``_parse_json``.
 
-    ``--json`` instructs Kiro to emit its response as a bare JSON object (no
-    markdown wrapper).  ``--no-interactive`` suppresses any interactive prompts
-    or confirmations.
-
-    Expected stdout
-    ~~~~~~~~~~~~~~~
-    A single JSON object that satisfies the requested schema, e.g.:
-
-    .. code-block:: json
-
-        {"verdict": "SKIP", "confidence": 0.82, "reasoning": "No momentum..."}
-
-    Tolerant parse: ``_parse_json`` strips leading/trailing prose and ``` fences
-    and extracts the first ``{...}`` it finds — so minor preamble is acceptable.
-
-    On non-zero exit or unparseable output the adapter raises ``LLMError``.
-
-    Environment overrides
-    ~~~~~~~~~~~~~~~~~~~~~
-    * ``KIRO_CLI_CMD`` — override the binary path/name (default: ``kiro``).
-
-    Temporary files
-    ~~~~~~~~~~~~~~~
-    Written to ``/tmp/helm_kiro_system.txt`` and ``/tmp/helm_kiro_user.txt`` on
-    every call (overwritten, never accumulated).  Both files are created inside
-    the ``/tmp`` working directory used by ``_run_cli`` so there is no path
-    confusion.
-
-    Auth
-    ~~~~
-    Kiro authenticates via its own keychain or a ``KIRO_API_KEY`` environment
-    variable — see ``docs/kiro-agent-setup.md`` for the one-time setup steps.
+    Auth: ``kiro-cli`` logs in via Builder ID (state under ``~/.kiro``); see
+    ``docs/kiro-agent-setup.md``. Raises ``LLMError`` on non-zero exit or
+    unparseable output.
     """
-    kiro_cmd = os.environ.get("KIRO_CLI_CMD", "kiro")
-    cli = shutil.which(kiro_cmd) or kiro_cmd  # shutil.which returns None if absent
-    if not shutil.which(kiro_cmd):
+    kiro_cmd = os.environ.get("KIRO_CLI_CMD", KIRO_DEFAULT_CMD)
+    cli = shutil.which(kiro_cmd)
+    if cli is None and os.path.isabs(kiro_cmd) and os.path.exists(kiro_cmd):
+        cli = kiro_cmd
+    if not cli:
         raise LLMError(
             f"`{kiro_cmd}` CLI not on PATH and KIRO_CLI_CMD does not point to a "
-            "valid binary — install Kiro and/or set KIRO_CLI_CMD"
+            "valid binary — install/login the Kiro CLI or set KIRO_CLI_CMD"
         )
-
-    # Write prompts to temp files (Kiro has no stdin/flag for multi-line text).
-    system_file = "/tmp/helm_kiro_system.txt"
-    user_file = "/tmp/helm_kiro_user.txt"
-    injected_system = system + GENERIC_CLI_RULES_SUFFIX
-    try:
-        with open(system_file, "w", encoding="utf-8") as fh:
-            fh.write(injected_system)
-        with open(user_file, "w", encoding="utf-8") as fh:
-            fh.write(user)
-    except OSError as exc:
-        raise LLMError(f"kiro: failed to write prompt files: {exc}") from exc
-
-    cmd = [
-        cli, "run",
-        "--system", system_file,
-        "--prompt", user_file,
-        "--json",
-        "--no-interactive",
-    ]
+    prompt = _build_generic_prompt(system, user)
+    cmd = [cli, "chat", "--no-interactive", "--trust-tools=", "--wrap", "never", prompt]
     stdout = _run_cli(cmd, name="kiro", timeout_s=timeout_s)
-    return _parse_json(stdout)
+    return _parse_json(_strip_ansi(stdout))
 
 
 # Backend registry: name -> adapter. Adapters share a uniform signature
@@ -484,6 +446,14 @@ CLI_ADAPTERS: dict[str, AdapterFn] = {
     "nemotron": _adapter_openrouter,   # nvidia/nemotron-3-super-120b-a12b:free via OpenRouter
     "opencode": _adapter_opencode,
 }
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI/VT100 escape sequences (some CLIs colourize stdout, e.g. Kiro)."""
+    return _ANSI_RE.sub("", text or "")
 
 
 def _parse_json(text: str) -> dict:
