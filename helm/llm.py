@@ -383,14 +383,103 @@ def _adapter_opencode(system: str, user: str, *, model: str, schema: dict,
     return _parse_json(stdout)
 
 
+KIRO_DEFAULT_MODEL = "kiro-agent"
+
+
+def _adapter_kiro(system: str, user: str, *, model: str, schema: dict,
+                  timeout_s: int) -> dict:
+    """Kiro CLI adapter (`kiro run`).
+
+    CLI CONTRACT
+    ------------
+    Binary: ``kiro`` (or the path in ``KIRO_CLI_CMD`` env var).
+
+    Invocation::
+
+        kiro run --system <system_prompt_file> --prompt <user_prompt_file> \
+                 --json --no-interactive
+
+    Because Kiro has no single-argument stdin flag, both the system prompt and
+    the user prompt are written to temporary files in ``/tmp`` and passed via
+    ``--system`` / ``--prompt`` respectively.  The combined headless-orchestration
+    rules suffix (``GENERIC_CLI_RULES_SUFFIX``) is appended to the system text
+    before writing so Kiro follows the same "output only raw JSON" convention as
+    the other non-Claude CLI adapters.
+
+    ``--json`` instructs Kiro to emit its response as a bare JSON object (no
+    markdown wrapper).  ``--no-interactive`` suppresses any interactive prompts
+    or confirmations.
+
+    Expected stdout
+    ~~~~~~~~~~~~~~~
+    A single JSON object that satisfies the requested schema, e.g.:
+
+    .. code-block:: json
+
+        {"verdict": "SKIP", "confidence": 0.82, "reasoning": "No momentum..."}
+
+    Tolerant parse: ``_parse_json`` strips leading/trailing prose and ``` fences
+    and extracts the first ``{...}`` it finds — so minor preamble is acceptable.
+
+    On non-zero exit or unparseable output the adapter raises ``LLMError``.
+
+    Environment overrides
+    ~~~~~~~~~~~~~~~~~~~~~
+    * ``KIRO_CLI_CMD`` — override the binary path/name (default: ``kiro``).
+
+    Temporary files
+    ~~~~~~~~~~~~~~~
+    Written to ``/tmp/helm_kiro_system.txt`` and ``/tmp/helm_kiro_user.txt`` on
+    every call (overwritten, never accumulated).  Both files are created inside
+    the ``/tmp`` working directory used by ``_run_cli`` so there is no path
+    confusion.
+
+    Auth
+    ~~~~
+    Kiro authenticates via its own keychain or a ``KIRO_API_KEY`` environment
+    variable — see ``docs/kiro-agent-setup.md`` for the one-time setup steps.
+    """
+    kiro_cmd = os.environ.get("KIRO_CLI_CMD", "kiro")
+    cli = shutil.which(kiro_cmd) or kiro_cmd  # shutil.which returns None if absent
+    if not shutil.which(kiro_cmd):
+        raise LLMError(
+            f"`{kiro_cmd}` CLI not on PATH and KIRO_CLI_CMD does not point to a "
+            "valid binary — install Kiro and/or set KIRO_CLI_CMD"
+        )
+
+    # Write prompts to temp files (Kiro has no stdin/flag for multi-line text).
+    system_file = "/tmp/helm_kiro_system.txt"
+    user_file = "/tmp/helm_kiro_user.txt"
+    injected_system = system + GENERIC_CLI_RULES_SUFFIX
+    try:
+        with open(system_file, "w", encoding="utf-8") as fh:
+            fh.write(injected_system)
+        with open(user_file, "w", encoding="utf-8") as fh:
+            fh.write(user)
+    except OSError as exc:
+        raise LLMError(f"kiro: failed to write prompt files: {exc}") from exc
+
+    cmd = [
+        cli, "run",
+        "--system", system_file,
+        "--prompt", user_file,
+        "--json",
+        "--no-interactive",
+    ]
+    stdout = _run_cli(cmd, name="kiro", timeout_s=timeout_s)
+    return _parse_json(stdout)
+
+
 # Backend registry: name -> adapter. Adapters share a uniform signature
 # (system, user, *, model, schema, timeout_s) -> dict. `claude` is the default
 # and the proven path; `gemini`/`opencode` are headless CLI wrappers; `qwen` and
-# `nemotron` run via OpenRouter's HTTP API (model id supplied per-competitor).
+# `nemotron` run via OpenRouter's HTTP API (model id supplied per-competitor);
+# `kiro` shells out to the Kiro CLI (see _adapter_kiro docstring + docs/kiro-agent-setup.md).
 AdapterFn = Callable[..., dict]
 CLI_ADAPTERS: dict[str, AdapterFn] = {
     "claude": _adapter_claude,
     "gemini": _adapter_gemini,
+    "kiro": _adapter_kiro,
     "qwen": _adapter_openrouter,       # qwen/qwen3-next-80b-a3b-instruct:free via OpenRouter
     "nemotron": _adapter_openrouter,   # nvidia/nemotron-3-super-120b-a12b:free via OpenRouter
     "opencode": _adapter_opencode,
