@@ -832,8 +832,11 @@ BACKLOG_MAX_ACCEPTS_PER_PASS = 3
 
 # How many raw proposals to hand the PM in one batch. Big enough that genuine
 # restatements land in the same batch (so the PM can see and supersede them),
-# small enough to stay inside the model's context + the PM_BATCH token budget.
-BACKLOG_BATCH_SIZE_DEFAULT = 20
+# small enough to stay inside the model's context + the PM_BATCH token budget
+# AND to finish one constrained-JSON `claude` CLI call inside CLI_TIMEOUT_S
+# (300s). Measured: batch=8 ≈ 112s; batch=20 overran 300s and timed out. Keep
+# this conservative — the drain just runs more (reliable) passes.
+BACKLOG_BATCH_SIZE_DEFAULT = 8
 
 # Larger token ceiling than the weekly review: the batch response carries one
 # entry PER proposal (potentially 20+), not just 0–3 suggestions.
