@@ -187,14 +187,19 @@ field names. Concrete examples are non-negotiable.
   * prompt_tweak — edit a system prompt block.
     spec = {
       "file": "scripts/decide_signals.py" | "helm/retro.py",
-      "anchor": "<unique-substring inside the prompt to locate edit>",
+      "anchor": "<a substring copied VERBATIM from that file that occurs EXACTLY
+                 ONCE — do NOT invent, paraphrase, or reuse the example below.
+                 The Engineer checks it against the real file and fails the task
+                 if it is absent or non-unique>",
       "action": "append" | "prepend" | "replace",
       "text":   "<the new wording — append/prepend add a paragraph; replace swaps the anchor>"
     }
-    Example: {"file": "scripts/decide_signals.py",
-              "anchor": "Default to SKIP when ambiguous",
-              "action": "append",
-              "text": "Auto-skip any signal whose age exceeds 15 minutes..."}
+    Example (ILLUSTRATIVE shape only — never emit this literal anchor; copy a
+    real phrase out of the target file instead):
+      {"file": "scripts/decide_signals.py",
+       "anchor": "<verbatim phrase lifted from the decider prompt>",
+       "action": "append",
+       "text": "Auto-skip any signal whose age exceeds 15 minutes..."}
 
   * param_change — rewrite one module-level constant.
     spec = {

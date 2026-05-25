@@ -23,6 +23,7 @@ The engineer NEVER pushes to a remote; ``git_commit_all`` is local only.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -45,7 +46,8 @@ from helm.agents.base import (
     unverified_config_versions,
     unverified_releases,
 )
-from helm.config import HOUSE_COMPETITOR_ID
+from helm.config import DECIDER_MODEL_DEFAULT, HOUSE_COMPETITOR_ID
+from helm.llm import LLMError, complete_json
 
 # Task types this agent can execute. Anything else stays as ``needs_human``.
 # The first group are house/code tasks (commit + pytest); the last two are
@@ -693,6 +695,81 @@ def apply_config_mutator(task_type: str, competitor_id: str,
                                error=f"unsupported config task_type {task_type}")
 
 
+# ─── LLM anchor repair (prompt_tweak / bug_fix) ───────────────────────
+# The PM writes anchor-based specs WITHOUT seeing the target file, so anchors
+# are frequently absent or non-unique (it even parroted the prompt's example
+# anchor). Rather than fail the task, resolve a real verbatim anchor with ONE
+# LLM call against the actual file, then apply deterministically. ruff + pytest
+# still gate the result, and the Tester reverts anything that breaks.
+
+_ANCHOR_TASK_FILES: dict[str, Callable[[dict], object]] = {
+    "prompt_tweak": lambda s: s.get("file"),
+    "bug_fix": lambda s: s.get("target_file") or s.get("file"),
+}
+
+_ANCHOR_PICK_SCHEMA = {
+    "type": "object",
+    "properties": {"anchor": {"type": "string"}},
+    "required": ["anchor"],
+}
+
+
+def _llm_pick_anchor(rel: str, text: str, spec: dict) -> str | None:
+    """One LLM call: pick a substring of `text` present EXACTLY ONCE, near where
+    the intended change belongs. Returns None on any failure (caller then lets
+    the deterministic mutator fail as before)."""
+    model = os.environ.get("DECIDER_MODEL", DECIDER_MODEL_DEFAULT)
+    mode = os.environ.get("LLM_MODE", "cli")
+    intent = spec.get("text") or spec.get("replacement") or ""
+    action = spec.get("action") or "replace"
+    snippet = text if len(text) <= 12000 else text[:12000]  # stay under CLI timeout
+    system = (
+        "You locate an edit anchor in a source file. Output STRICT JSON only: "
+        '{"anchor": "<substring>"}. The anchor MUST be copied byte-for-byte from '
+        "the provided file content and MUST occur EXACTLY ONCE in it. Choose a "
+        "distinctive line near where the described change should be applied. "
+        "Never invent text that is not present verbatim in the file."
+    )
+    user = (
+        f"FILE: {rel}\n"
+        f"INTENDED CHANGE (action={action}): {str(intent)[:600]}\n\n"
+        f"FILE CONTENT (verbatim):\n```\n{snippet}\n```\n\n"
+        "Return the anchor JSON."
+    )
+    try:
+        out = complete_json(system, user, schema=_ANCHOR_PICK_SCHEMA,
+                            model=model, mode=mode, max_tokens=300)
+    except LLMError:
+        return None
+    cand = out.get("anchor")
+    return cand if isinstance(cand, str) and cand else None
+
+
+def _maybe_repair_anchor(task_type: str, spec: dict) -> tuple[dict, str | None]:
+    """Ensure an anchor-based task's anchor exists verbatim & uniquely; repair via
+    one LLM call if not. No-op (no LLM spend) when the anchor already resolves or
+    for non-anchor task types. Returns (possibly-updated spec, human note|None)."""
+    pick_file = _ANCHOR_TASK_FILES.get(task_type)
+    if pick_file is None:
+        return spec, None
+    rel = pick_file(spec)
+    anchor = spec.get("anchor")
+    if not isinstance(rel, str) or not rel or not isinstance(anchor, str) or not anchor:
+        return spec, None
+    path = _resolve_repo_path(rel)
+    if not path.exists():
+        return spec, None
+    text = _read(path)
+    if _count_anchor(text, anchor) == 1:
+        return spec, None  # already unique — fast path, no LLM
+    new_anchor = _llm_pick_anchor(rel, text, spec)
+    if new_anchor and new_anchor != anchor and _count_anchor(text, new_anchor) == 1:
+        repaired = dict(spec)
+        repaired["anchor"] = new_anchor
+        return repaired, f"anchor repaired via LLM: {anchor!r} → {new_anchor!r}"
+    return spec, None  # couldn't repair — deterministic mutator will fail as before
+
+
 def apply_mutator(task_type: str, spec: dict) -> MutatorResult:
     """Dispatch to the registered mutator; safe on unknown types."""
     fn = MUTATORS.get(task_type)
@@ -808,6 +885,13 @@ def _process_one_task_inner(run: RunHandle) -> dict | None:
         run.outcome = "error"
         run.summary = msg
         return {"ok": False, "task_id": task_id, "reason": msg}
+
+    # Repair a missing/non-unique anchor (prompt_tweak / bug_fix) via one LLM
+    # call against the real file before applying. No-op for other task types or
+    # when the anchor already resolves uniquely.
+    spec, anchor_note = _maybe_repair_anchor(task_type, spec)
+    if anchor_note:
+        run.add_trace(anchor_repair=anchor_note)
 
     # Snapshot tree state so the diff-preview reflects the actual edit.
     touched_before: dict[str, str] = {}
