@@ -11,6 +11,10 @@ schema. It is fully idempotent — safe to run any number of times:
   4. Stamps every existing signals / decisions / paper_trades row that has no
      competitor_id yet with 'house-claude' so the league treats the legacy
      book as that competitor's.
+  5. Stamps the self-improvement-loop tables (trade_retrospectives /
+     improvement_proposals / agent_tasks / releases / agent_runs) the same
+     way — the loop was house-only before per-agent scoping, so every legacy
+     row belongs to 'house-claude'.
 
 All money uses Decimal; state changes are recorded via insert_audit.
 
@@ -40,6 +44,13 @@ HOUSE_AUTONOMY = "incumbent"
 
 # Tables that gain an optional competitor_id and need legacy rows stamped.
 STAMP_TABLES = ("signals", "decisions", "paper_trades")
+
+# Self-improvement-loop tables stamped house too: the loop was house/code-only
+# before per-agent scoping, so any pre-existing rows belong to 'house-claude'.
+LOOP_STAMP_TABLES = (
+    "trade_retrospectives", "improvement_proposals",
+    "agent_tasks", "releases", "agent_runs",
+)
 
 
 def _upsert_house_competitor(c) -> bool:
@@ -100,7 +111,7 @@ def migrate() -> dict[str, int]:
     with conn() as c:
         summary["competitor_inserted"] = int(_upsert_house_competitor(c))
         summary["wallet_inserted"] = int(_seed_house_wallet(c, initial_capital))
-        for table in STAMP_TABLES:
+        for table in (*STAMP_TABLES, *LOOP_STAMP_TABLES):
             summary[f"{table}_stamped"] = _stamp_legacy_rows(c, table)
 
     insert_audit("migrate_competition", "backfill", summary)
@@ -112,9 +123,10 @@ def main() -> None:
     print("Competition migration complete:")
     print(f"  competitor 'house-claude' inserted : {summary['competitor_inserted']}")
     print(f"  house wallet inserted              : {summary['wallet_inserted']}")
-    for table in STAMP_TABLES:
-        print(f"  {table:<14} rows stamped        : {summary[f'{table}_stamped']}")
-    total_stamped = sum(summary[f"{t}_stamped"] for t in STAMP_TABLES)
+    for table in (*STAMP_TABLES, *LOOP_STAMP_TABLES):
+        print(f"  {table:<22} rows stamped : {summary[f'{table}_stamped']}")
+    total_stamped = sum(summary[f"{t}_stamped"]
+                        for t in (*STAMP_TABLES, *LOOP_STAMP_TABLES))
     if (summary["competitor_inserted"] == 0
             and summary["wallet_inserted"] == 0
             and total_stamped == 0):

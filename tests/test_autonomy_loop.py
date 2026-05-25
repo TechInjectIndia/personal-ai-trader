@@ -101,11 +101,11 @@ def _seed_synthetic_proposal(sentinel: str) -> int:
                  signal_quality_score, decision_quality_score,
                  execution_quality_score, tags,
                  summary_layman, why_we_acted, what_happened,
-                 verdict_reasoning, learnings)
+                 verdict_reasoning, learnings, competitor_id)
             VALUES ('SKIP', %s, 'mock', 'mock', 'BAD_CALL',
                     3, 3, 3, '[]'::jsonb,
                     %s, 'why', 'what', 'verdict-reasoning',
-                    '[]'::jsonb)
+                    '[]'::jsonb, 'house-claude')
             RETURNING id
             """,
             (dec["id"], f"{sentinel} synthetic retro"),
@@ -114,12 +114,12 @@ def _seed_synthetic_proposal(sentinel: str) -> int:
             """
             INSERT INTO improvement_proposals
                 (retro_id, category, title, rationale, proposed_change,
-                 evidence, confidence, status)
+                 evidence, confidence, status, competitor_id)
             VALUES (%s, 'meta',
                     %s,
                     'Synthetic smoke test — raise smoke_key value.',
                     'Set smoke_key_autonomy-smoke=100',
-                    '{"smoke": true}'::jsonb, 4, 'open')
+                    '{"smoke": true}'::jsonb, 4, 'open', 'house-claude')
             RETURNING id
             """,
             (retro["id"], f"{sentinel} smoke proposal — bump smoke key"),
@@ -158,7 +158,7 @@ def test_pm_engineer_tester_round_trip(monkeypatch, _isolate_synthetic_rows):
     monkeypatch.setattr("helm.llm.complete_json", fake_pm_llm, raising=True)
     monkeypatch.setattr(pm_mod, "complete_json", fake_pm_llm, raising=False)
 
-    pm_result = pm_mod.run_weekly_review(force=True)
+    pm_result = pm_mod.run_weekly_review(force=True, competitor_id="house-claude")
     assert pm_result["tasks_created"], f"PM did not create a task: {pm_result}"
     task_id = pm_result["tasks_created"][0]
 

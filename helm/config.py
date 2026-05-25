@@ -204,19 +204,34 @@ HOUSE_TRADE_FILTER = "(competitor_id IS NULL OR competitor_id = 'house-claude')"
 @dataclass(frozen=True)
 class BackendQuota:
     max_calls: int          # calls allowed per rolling window
-    window_minutes: int     # window length; on exhaustion we pause until it rolls
+    window_minutes: int     # window length; on LOCAL exhaustion we pause until it rolls
+    # Backoff applied when the backend *returns* a rate-limit/quota error
+    # (quota.note_error). For daily-cap tiers a 429 means the day is spent, so
+    # this defaults to the full window. For backends whose 429s are transient
+    # upstream saturation (OpenRouter free models), set a SHORT backoff so the
+    # agent retries within the session instead of benching for the whole window.
+    error_backoff_minutes: int | None = None
 
 
 # Subscription / free-gateway paths (claude, opencode) get generous ceilings;
-# the three login-gated free tiers get tighter daily windows so we never blow
-# past a free allowance. A 5-min cadence over a ~5h trading day is ~63 cycles,
-# so anything ≥ ~100/day comfortably covers one agent for a full session.
+# the free tiers get tighter daily windows so we never blow past a free
+# allowance. A 5-min cadence over a ~5h trading day is ~63 cycles, so anything
+# ≥ ~100/day comfortably covers one agent for a full session.
+#
+# qwen + nemotron run via OpenRouter free models, which share ONE account-wide
+# daily request cap (≈50/day with <$10 ever-purchased, ≈1000/day at ≥$10). Our
+# per-backend ceilings below assume the 1000/day tier; if the account is on the
+# 50/day tier, OpenRouter returns 429 first and the quota subsystem auto-pauses
+# the backend (quota.note_error) — so we degrade gracefully either way.
 BACKEND_QUOTAS: dict[str, "BackendQuota"] = {
     "claude":   BackendQuota(max_calls=2000, window_minutes=24 * 60),
     "opencode": BackendQuota(max_calls=2000, window_minutes=24 * 60),
     "gemini":   BackendQuota(max_calls=200,  window_minutes=24 * 60),
-    "qwen":     BackendQuota(max_calls=1000, window_minutes=24 * 60),
-    "codex":    BackendQuota(max_calls=300,  window_minutes=24 * 60),
+    # OpenRouter free models: daily ceiling stays 24h, but a returned 429 is
+    # transient upstream saturation — back off only ~10 min and retry, don't
+    # bench for the day.
+    "qwen":     BackendQuota(max_calls=400,  window_minutes=24 * 60, error_backoff_minutes=10),
+    "nemotron": BackendQuota(max_calls=400,  window_minutes=24 * 60, error_backoff_minutes=10),
 }
 # Fallback for any backend without an explicit entry above.
 DEFAULT_BACKEND_QUOTA = BackendQuota(max_calls=500, window_minutes=24 * 60)

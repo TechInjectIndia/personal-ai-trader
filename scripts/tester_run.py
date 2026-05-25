@@ -29,10 +29,12 @@ from dotenv import load_dotenv  # noqa: E402
 from helm.agents.tester import (  # noqa: E402
     STAGES_ORDER,
     process_unverified,
+    process_unverified_config,
     verify_release,
 )
 from helm.agents.base import (  # noqa: E402
     git_revert,
+    is_autonomy_paused,
     mark_release_reverted,
     create_task,
     pm2_reload,
@@ -136,16 +138,24 @@ def main() -> int:
     load_dotenv(ENV_PATH, override=False)
 
     if args.release_id is not None:
+        # Explicit human-driven single verify still runs even when paused.
         return _verify_single(args.release_id)
 
-    # Batch path: process_unverified handles locking, ordering, and the
-    # two-reverts-in-a-row autonomy-pause guard internally.
+    if is_autonomy_paused():
+        print("[tester] autonomy paused — no-op")
+        return 0
+
+    # Batch path: each loop handles its own locking, ordering, and the
+    # two-reverts-in-a-row autonomy-pause guard internally. Run the house
+    # release loop first, then the freestyle config-version loop.
     count = process_unverified()
     print(f"[tester] processed {count} release(s)")
+    config_count = process_unverified_config()
+    print(f"[tester] processed {config_count} config version(s)")
 
-    # Exit 1 if any of those were reverted/failed; 0 if all green or no work.
-    # process_unverified doesn't tell us the breakdown directly, so we
-    # re-inspect via the audit/releases tables.
+    # Exit 1 if anything was reverted/failed (releases OR config versions) in
+    # the last 5 minutes; 0 if all green or no work. Neither loop returns the
+    # breakdown directly, so we re-inspect via the tables.
     with conn() as c:
         row = c.execute(
             """
@@ -156,7 +166,17 @@ def main() -> int:
             FROM releases
             """
         ).fetchone()
-    return 1 if int(row["recent_bad"] or 0) else 0
+        crow = c.execute(
+            """
+            SELECT
+              COUNT(*) FILTER (WHERE status IN ('reverted','failed')
+                               AND COALESCE(reverted_ts, verified_ts) >= now() - interval '5 minutes'
+                              ) AS recent_bad
+            FROM competitor_config_versions
+            """
+        ).fetchone()
+    bad = int(row["recent_bad"] or 0) + int(crow["recent_bad"] or 0)
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":

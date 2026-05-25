@@ -38,7 +38,7 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from helm.config import DECIDER_MODEL_DEFAULT, SQUARE_OFF_AT
+from helm.config import DECIDER_MODEL_DEFAULT, HOUSE_COMPETITOR_ID, SQUARE_OFF_AT
 from helm.data.store import conn
 from helm.llm import complete_json
 
@@ -271,6 +271,7 @@ def _fetch_trade_bundle(trade_id: int) -> dict | None:
                 t.entry_price, t.entry_ts, t.stop_loss, t.target,
                 t.exit_price, t.exit_ts, t.exit_reason,
                 t.pnl_inr, t.charges_inr, t.net_pnl_inr, t.status,
+                t.competitor_id,
                 d.id AS decision_id, d.actor, d.verdict, d.reasoning,
                 s.id AS signal_id, s.strategy, s.rationale, s.payload, s.ts AS signal_ts
             FROM paper_trades t
@@ -290,6 +291,7 @@ def _fetch_skip_bundle(decision_id: int) -> dict | None:
             """
             SELECT
                 d.id AS decision_id, d.actor, d.verdict, d.reasoning,
+                d.competitor_id,
                 d.final_entry, d.final_stop, d.final_target, d.ts AS decision_ts,
                 s.id AS signal_id, s.strategy, s.symbol, s.side,
                 s.entry_price, s.stop_loss, s.target,
@@ -586,12 +588,17 @@ def _normalize_proposals(raw: Any) -> list[dict]:
 
 
 def _persist(kind: str, *, trade_id: int | None, decision_id: int,
-             model: str, llm_mode: str, norm: dict, raw: dict) -> int:
+             model: str, llm_mode: str, norm: dict, raw: dict,
+             competitor_id: str) -> int:
     """Insert a retro row + any improvement-proposal rows.
 
     Returns the new retro id. The retro row and its proposals are written
     inside the same connection so a crash mid-way can't leave orphaned
     proposals (the FK is ON DELETE CASCADE for safety anyway).
+
+    `competitor_id` (already canonicalised NULL→'house-claude' by the caller)
+    is stamped on BOTH the retro and every proposal so the per-agent PM review
+    can scope cleanly.
     """
     with conn() as c:
         row = c.execute(
@@ -601,11 +608,11 @@ def _persist(kind: str, *, trade_id: int | None, decision_id: int,
                  verdict_label, signal_quality_score, decision_quality_score,
                  execution_quality_score, tags,
                  summary_layman, why_we_acted, what_happened, verdict_reasoning,
-                 learnings, raw_response)
+                 learnings, raw_response, competitor_id)
             VALUES (%s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s::jsonb,
                     %s, %s, %s, %s,
-                    %s::jsonb, %s::jsonb)
+                    %s::jsonb, %s::jsonb, %s)
             RETURNING id
             """,
             (
@@ -621,6 +628,7 @@ def _persist(kind: str, *, trade_id: int | None, decision_id: int,
                 norm["verdict_reasoning"],
                 json.dumps(norm["learnings"]),
                 json.dumps(raw),
+                competitor_id,
             ),
         ).fetchone()
         retro_id = row["id"]
@@ -630,14 +638,14 @@ def _persist(kind: str, *, trade_id: int | None, decision_id: int,
                 """
                 INSERT INTO improvement_proposals
                     (retro_id, category, title, rationale, proposed_change,
-                     evidence, confidence)
-                VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)
+                     evidence, confidence, competitor_id)
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s)
                 """,
                 (
                     retro_id, p["category"], p["title"], p["rationale"],
                     p["proposed_change"],
                     json.dumps(p["evidence"]) if p["evidence"] is not None else None,
-                    p["confidence"],
+                    p["confidence"], competitor_id,
                 ),
             )
     return retro_id
@@ -685,6 +693,7 @@ def run_for_trade(trade_id: int, *, force: bool = False) -> RetroResult | None:
         decision_id=bundle["decision_id"],
         model=model, llm_mode=mode,
         norm=norm, raw=raw,
+        competitor_id=bundle["competitor_id"] or HOUSE_COMPETITOR_ID,
     )
     return RetroResult(
         retro_id=retro_id, kind="TRADE",
@@ -749,6 +758,7 @@ def run_for_skip(decision_id: int, *, force: bool = False) -> RetroResult | None
         decision_id=decision_id,
         model=model, llm_mode=mode,
         norm=norm, raw=raw,
+        competitor_id=bundle["competitor_id"] or HOUSE_COMPETITOR_ID,
     )
     return RetroResult(
         retro_id=retro_id, kind="SKIP",

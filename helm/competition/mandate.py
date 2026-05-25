@@ -80,10 +80,20 @@ def current_week_start() -> date:
     return week_start(datetime.now(IST).date())
 
 
-def _build_user_prompt(competitor: Competitor) -> str:
+def next_week_start() -> date:
+    """Monday of the NEXT calendar week (the upcoming trading week).
+
+    Used by the weekend planner: a mandate written on Sat/Sun must be keyed to
+    the Monday the league actually trades, since the runner reads the mandate via
+    `current_week_start()` once that week begins.
+    """
+    return current_week_start() + timedelta(days=7)
+
+
+def _build_user_prompt(competitor: Competitor, wk_start: date | None = None) -> str:
     snapshot = {
         "now_ist": datetime.now(IST).strftime("%Y-%m-%d %H:%M"),
-        "week_start": current_week_start().isoformat(),
+        "week_start": (wk_start or current_week_start()).isoformat(),
         "max_symbols": MAX_MANDATE_SYMBOLS,
         "candidate_universe": list(TRADABLE_UNIVERSE),
     }
@@ -114,8 +124,13 @@ def _clean_universe(raw_universe: Any) -> list[str]:
     return cleaned
 
 
-def generate_mandate(competitor: Competitor) -> dict[str, Any]:
+def generate_mandate(competitor: Competitor,
+                     wk_start: date | None = None) -> dict[str, Any]:
     """Ask the competitor's backend for its weekly mandate.
+
+    `wk_start` only frames the prompt's week context (defaults to the current
+    week); persistence keying is handled by the caller. Pass the upcoming Monday
+    when planning ahead of the week (the weekend planner does this).
 
     Returns a dict with keys: universe (validated, non-empty), strategy_config,
     rationale, raw (the parsed backend payload), `fellback` (True if the backend
@@ -129,7 +144,7 @@ def generate_mandate(competitor: Competitor) -> dict[str, Any]:
     system = SYSTEM_PROMPT_TEMPLATE.format(
         persona=persona, max_symbols=MAX_MANDATE_SYMBOLS
     )
-    user = _build_user_prompt(competitor)
+    user = _build_user_prompt(competitor, wk_start)
 
     call = call_backend(
         competitor_id=competitor.id, backend=competitor.backend,
@@ -237,7 +252,7 @@ def ensure_mandate(
                 "paused": False,
             }
 
-    plan = generate_mandate(competitor)
+    plan = generate_mandate(competitor, wk_start=wk)
     if plan["paused"]:
         return {
             "competitor_id": competitor.id,

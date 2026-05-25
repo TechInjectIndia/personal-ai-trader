@@ -366,3 +366,60 @@ ALTER TABLE decisions        ADD COLUMN IF NOT EXISTS competitor_id TEXT;
 ALTER TABLE paper_trades     ADD COLUMN IF NOT EXISTS competitor_id TEXT;
 ALTER TABLE daily_state      ADD COLUMN IF NOT EXISTS competitor_id TEXT;
 ALTER TABLE metrics_snapshots ADD COLUMN IF NOT EXISTS competitor_id TEXT;
+
+
+-- ─── Per-agent self-improvement loop ──────────────────────────────────
+-- Originally the PM→Engineer→Tester loop was house/code-only. Each agent in
+-- the competition league (house + freestyle competitors) now flows through it
+-- independently: the retro/proposal/task/release/run rows below gain an
+-- optional competitor_id so the loop can be scoped per agent. NULL = house,
+-- same convention as the operational tables above; the migrate_competition.py
+-- backfill stamps legacy rows as 'house-claude'.
+ALTER TABLE trade_retrospectives  ADD COLUMN IF NOT EXISTS competitor_id TEXT;
+ALTER TABLE improvement_proposals ADD COLUMN IF NOT EXISTS competitor_id TEXT;
+ALTER TABLE agent_tasks           ADD COLUMN IF NOT EXISTS competitor_id TEXT;
+ALTER TABLE releases              ADD COLUMN IF NOT EXISTS competitor_id TEXT;
+ALTER TABLE agent_runs            ADD COLUMN IF NOT EXISTS competitor_id TEXT;
+
+-- Widen the agent_tasks task-type check to allow the two freestyle config
+-- mutators. Superset of the original set, so dropping + re-adding is safe and
+-- idempotent (re-running schema.sql just rewrites the same constraint).
+ALTER TABLE agent_tasks DROP CONSTRAINT IF EXISTS agent_tasks_task_type_check;
+ALTER TABLE agent_tasks ADD CONSTRAINT agent_tasks_task_type_check
+    CHECK (task_type IN
+        ('prompt_tweak', 'param_change', 'add_filter',
+         'setting_override', 'add_strategy_variant',
+         'bug_fix', 'needs_human',
+         'persona_edit', 'strategy_config_edit'));
+
+-- Freestyle "release analogue": every persona / strategy_config edit the
+-- Engineer applies to a competitor lands here with a full before/after
+-- snapshot so the Tester can roll it back deterministically (no git involved).
+--   field='persona'          → old/new_value snapshot competitors.persona
+--                              (mandate_week NULL).
+--   field='strategy_config'  → old/new_value snapshot the competitor_mandates
+--                              row's strategy_config; mandate_week is the
+--                              competitor_mandates.week_start the edit targeted
+--                              (reverts key off (competitor_id, week_start)).
+CREATE TABLE IF NOT EXISTS competitor_config_versions (
+    id              BIGSERIAL PRIMARY KEY,
+    competitor_id   TEXT NOT NULL REFERENCES competitors(id),
+    task_id         BIGINT REFERENCES agent_tasks(id) ON DELETE SET NULL,
+    created_ts      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    field           TEXT NOT NULL CHECK (field IN ('persona', 'strategy_config')),
+    mandate_week    DATE,                              -- target week_start; NULL for persona
+    old_value       JSONB,                             -- prior value (NULL on first edit)
+    new_value       JSONB NOT NULL,                    -- value applied
+    -- 'deployed' = applied, awaiting tester; 'verified' = tester signed off;
+    -- 'reverted' = tester rolled it back; 'failed' = apply/revert itself failed.
+    status          TEXT NOT NULL DEFAULT 'deployed'
+                      CHECK (status IN ('deployed', 'verified',
+                                        'reverted', 'failed')),
+    verified_ts     TIMESTAMPTZ,
+    reverted_ts     TIMESTAMPTZ,
+    tester_notes    TEXT
+);
+CREATE INDEX IF NOT EXISTS config_versions_recent
+    ON competitor_config_versions (competitor_id, created_ts DESC);
+CREATE INDEX IF NOT EXISTS config_versions_unverified
+    ON competitor_config_versions (created_ts DESC) WHERE status = 'deployed';

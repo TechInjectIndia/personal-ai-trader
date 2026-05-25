@@ -10,17 +10,19 @@ existing mandate is left untouched unless --force.
 The freestyle runner reads this week's mandate automatically; the dynamic poller
 (scripts/poll_competition.py) then polls whatever extra symbols were chosen.
 
-NOT yet wired into crontab — going live is a human decision (each plan spends one
-backend call per competitor). Intended cadence once enabled: Monday morning,
-ahead of the trading week, e.g.:
+Cadence: SUNDAY morning (markets closed), planning the UPCOMING week so mandates
+are in place before Monday's open. The runner reads a mandate via the current
+week's Monday, so a weekend plan MUST target next week — use `--next-week`:
 
-  30 3 * * 1  run_in_venv.sh scripts/plan_mandates.py >> logs/mandates.log 2>&1
+  0 3 * * 0  run_in_venv.sh scripts/plan_mandates.py --next-week >> logs/mandates.log 2>&1
 
-$0 spend: backend calls run via the CLI backends (subscription / free gateways);
-ANTHROPIC_API_KEY is never required or set.
+$0 spend: backend calls run via the CLI / OpenRouter free backends; the Anthropic
+API key is never required.
 
 Usage:
-  python scripts/plan_mandates.py                         # all active freestyle agents
+  python scripts/plan_mandates.py                         # this week (Mon-Fri runner default)
+  python scripts/plan_mandates.py --next-week             # upcoming Monday (weekend planner)
+  python scripts/plan_mandates.py --week-start 2026-05-25 # a specific week (its Monday)
   python scripts/plan_mandates.py --competitor gemini-momentum
   python scripts/plan_mandates.py --force                 # regenerate even if present
   python scripts/plan_mandates.py --dry-run               # generate + print, do not persist
@@ -38,10 +40,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dotenv import load_dotenv
 
+from datetime import date
+
 from helm.competition.mandate import (
     current_week_start,
     ensure_mandate,
     generate_mandate,
+    next_week_start,
+    week_start,
 )
 from helm.competition.runner import Competitor, freestyle_competitors, get_competitor
 from helm.data.store import insert_audit
@@ -76,9 +82,23 @@ def main() -> int:
                    help="regenerate even if a mandate already exists this week")
     p.add_argument("--dry-run", action="store_true",
                    help="generate + print the mandate but do not persist it")
+    p.add_argument("--next-week", action="store_true",
+                   help="plan for the UPCOMING Monday (next calendar week) — use "
+                        "on weekends so mandates are ready before the week opens")
+    p.add_argument("--week-start", default=None, metavar="YYYY-MM-DD",
+                   help="plan for the week containing this date (normalised to its "
+                        "Monday); overrides --next-week")
     args = p.parse_args()
 
     load_dotenv(ENV_PATH, override=False)
+
+    # Resolve the target week: explicit --week-start > --next-week > current week.
+    if args.week_start:
+        wk = week_start(date.fromisoformat(args.week_start))
+    elif args.next_week:
+        wk = next_week_start()
+    else:
+        wk = current_week_start()
 
     competitors = _select(args.competitor)
     if args.backend:
@@ -93,14 +113,13 @@ def main() -> int:
         print("[mandates] no freestyle competitors to plan")
         return 0
 
-    wk = current_week_start()
     print(f"[mandates] week_start={wk.isoformat()} competitors={len(competitors)} "
           f"dry_run={args.dry_run} force={args.force}")
 
     planned = 0
     for comp in competitors:
         if args.dry_run:
-            plan = generate_mandate(comp)
+            plan = generate_mandate(comp, wk_start=wk)
             if plan["paused"]:
                 print(f"  {comp.id:<18} [{comp.backend}] PAUSED (quota) — no plan")
                 continue
@@ -109,7 +128,7 @@ def main() -> int:
                   f"universe={plan['universe']}")
             print(f"      rationale: {plan['rationale'][:160]}")
             continue
-        res = ensure_mandate(comp, force=args.force)
+        res = ensure_mandate(comp, force=args.force, wk_start=wk)
         planned += int(res["created"])
         if res["paused"]:
             tag = "paused(quota)"

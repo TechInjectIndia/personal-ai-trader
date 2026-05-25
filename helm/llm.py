@@ -16,18 +16,20 @@ Mode is selected by env var LLM_MODE (default `cli` while in POC).
 
 CLI backend registry
 --------------------
-The `cli` mode dispatches to one of several headless coding CLIs so the
-competition league can run each agent on a different vendor's CLI:
+The `cli` mode dispatches to one of several backends so the competition league
+can run each agent on a different vendor's model:
 
-  claude · gemini · qwen · codex · opencode
+  claude · gemini · qwen · nemotron · opencode
 
-The backend is chosen (in order of precedence) by the explicit `backend`
-argument, then the `LLM_BACKEND` env var, then the default `claude`. Each
-backend has a small adapter that builds the correct headless command and
-parses stdout to a JSON dict (tolerantly, via `_parse_json`). The `claude`
-adapter is the proven path and is preserved byte-for-byte; the other
-adapters concatenate system+user into one prompt (those CLIs have no
-separate system-prompt flag) and tolerate prose around the JSON.
+`claude`, `gemini`, and `opencode` shell out to headless coding CLIs; `qwen`
+(qwen3-next) and `nemotron` call OpenRouter's HTTP API directly (free models,
+model id per competitor). The backend is chosen (in order of precedence) by the
+explicit `backend` argument, then the `LLM_BACKEND` env var, then the default
+`claude`. Each backend has a small adapter. The `claude` adapter is the proven
+path and is preserved byte-for-byte; the CLI adapters concatenate system+user
+into one prompt (those CLIs have no separate system-prompt flag) and tolerate
+prose around the JSON; the OpenRouter adapter sends a real system/user message
+pair and parses the response content tolerantly.
 """
 
 from __future__ import annotations
@@ -283,64 +285,114 @@ def _build_generic_prompt(system: str, user: str) -> str:
 
 def _adapter_gemini(system: str, user: str, *, model: str, schema: dict,
                     timeout_s: int) -> dict:
-    """Google Gemini CLI (`gemini -p`). Google login. No system-prompt flag,
-    so system+user are concatenated and stdout is parsed tolerantly."""
+    """Google Gemini CLI (`gemini -p`). Auth via GEMINI_API_KEY (or Google
+    login). No system-prompt flag, so system+user are concatenated and stdout
+    is parsed tolerantly.
+
+    `--skip-trust` bypasses the CLI's workspace-trust gate: run unattended from
+    the repo, gemini otherwise exits 55 ("not running in a trusted directory")."""
     cli = _resolve_cli("gemini", "GEMINI_CLI_PATH")
     prompt = _build_generic_prompt(system, user)
-    cmd = [cli, "-p", prompt]
+    cmd = [cli, "--skip-trust", "-p", prompt]
     stdout = _run_cli(cmd, name="gemini", timeout_s=timeout_s)
     return _parse_json(stdout)
 
 
-def _adapter_qwen(system: str, user: str, *, model: str, schema: dict,
-                  timeout_s: int) -> dict:
-    """Qwen Code CLI (`qwen -p`). No system-prompt flag; tolerant parse."""
-    cli = _resolve_cli("qwen", "QWEN_CLI_PATH")
-    prompt = _build_generic_prompt(system, user)
-    cmd = [cli, "-p", prompt]
-    stdout = _run_cli(cmd, name="qwen", timeout_s=timeout_s)
-    return _parse_json(stdout)
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+# Free OpenRouter models leave reasoning/output headroom; $0 spend so be generous.
+OPENROUTER_MAX_TOKENS = 2048
 
 
-def _adapter_codex(system: str, user: str, *, model: str, schema: dict,
-                   timeout_s: int) -> dict:
-    """OpenAI Codex CLI (`codex exec`). ChatGPT login. Tolerant parse over the
-    exec transcript (Codex prints run metadata around the final answer).
+def _adapter_openrouter(system: str, user: str, *, model: str, schema: dict,
+                        timeout_s: int) -> dict:
+    """OpenRouter HTTP adapter — used by the `qwen` and `nemotron` backends.
 
-    `--skip-git-repo-check` lets it run outside a trusted git repo (we exec
-    from /tmp); `--sandbox read-only` keeps it from attempting writes."""
-    cli = _resolve_cli("codex", "CODEX_CLI_PATH")
-    prompt = _build_generic_prompt(system, user)
-    cmd = [
-        cli, "exec",
-        "--skip-git-repo-check",
-        "--sandbox", "read-only",
-        prompt,
-    ]
-    stdout = _run_cli(cmd, name="codex", timeout_s=timeout_s)
-    return _parse_json(stdout)
+    Unlike the subprocess CLIs, this calls OpenRouter's OpenAI-compatible chat
+    completions API directly over HTTPS, so `model` is REQUIRED (it is the
+    OpenRouter model id, e.g. `qwen/qwen3-next-80b-a3b-instruct:free` or
+    `nvidia/nemotron-3-super-120b-a12b:free`) and comes from the competitor's
+    `model` column. Auth via OPENROUTER_API_KEY in the environment (.env).
+
+    OpenRouter free models share an account-wide daily request cap; when it is
+    exhausted the API returns HTTP 429, whose body trips the competition quota
+    subsystem's rate-limit detector (`quota.note_error`) so the backend
+    auto-pauses and resumes next window. Output is parsed tolerantly — the
+    caller fail-closes on any unparseable byte."""
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise LLMError("OPENROUTER_API_KEY not set (required for OpenRouter backends)")
+    if not model:
+        raise LLMError("OpenRouter backend requires an explicit model id")
+    import requests
+
+    payload = {
+        "model": model,
+        "temperature": 0,
+        "max_tokens": OPENROUTER_MAX_TOKENS,
+        "messages": [
+            {"role": "system", "content": system + GENERIC_CLI_RULES_SUFFIX},
+            {"role": "user", "content": user},
+        ],
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        # Optional attribution headers OpenRouter recommends for app traffic.
+        "HTTP-Referer": "https://helm.techinject.co.in",
+        "X-Title": "helm-competition-league",
+    }
+    try:
+        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers,
+                             timeout=timeout_s)
+    except requests.Timeout as exc:
+        raise LLMError(f"openrouter timeout after {timeout_s}s") from exc
+    except requests.RequestException as exc:
+        raise LLMError(f"openrouter transport error: {exc}") from exc
+
+    if resp.status_code != 200:
+        # Keep the body (truncated) so quota.note_error can spot 429/rate-limit.
+        raise LLMError(f"openrouter HTTP {resp.status_code}: {resp.text[:500]}")
+
+    try:
+        data = resp.json()
+        text = data["choices"][0]["message"]["content"]
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        raise LLMError(f"openrouter malformed response: {resp.text[:300]!r}") from exc
+    return _parse_json(text)
+
+
+OPENCODE_DEFAULT_MODEL = "opencode/big-pickle"
 
 
 def _adapter_opencode(system: str, user: str, *, model: str, schema: dict,
                       timeout_s: int) -> dict:
-    """opencode CLI (`opencode run`). Provider login via its own config.
-    Tolerant parse."""
+    """opencode CLI (`opencode run`), pinned to its bundled gateway model.
+
+    We MUST pass `-m provider/model`: opencode auto-detects provider keys from
+    the environment, so once the runner loads .env (which carries GEMINI_API_KEY
+    for the gemini backend) an unpinned `opencode run` silently switches provider
+    and returns empty output. Pinning the model forces the free gateway and
+    ignores stray keys. Only an opencode-style `provider/model` id is valid for
+    -m; a non-matching id (e.g. the claude default passed by the smoke test) is
+    ignored in favour of the bundled gateway. Tolerant parse on stdout."""
     cli = _resolve_cli("opencode", "OPENCODE_CLI_PATH")
     prompt = _build_generic_prompt(system, user)
-    cmd = [cli, "run", prompt]
+    oc_model = model if (model and "/" in model) else OPENCODE_DEFAULT_MODEL
+    cmd = [cli, "run", "-m", oc_model, prompt]
     stdout = _run_cli(cmd, name="opencode", timeout_s=timeout_s)
     return _parse_json(stdout)
 
 
 # Backend registry: name -> adapter. Adapters share a uniform signature
 # (system, user, *, model, schema, timeout_s) -> dict. `claude` is the default
-# and the proven path; the others are best-effort headless wrappers.
+# and the proven path; `gemini`/`opencode` are headless CLI wrappers; `qwen` and
+# `nemotron` run via OpenRouter's HTTP API (model id supplied per-competitor).
 AdapterFn = Callable[..., dict]
 CLI_ADAPTERS: dict[str, AdapterFn] = {
     "claude": _adapter_claude,
     "gemini": _adapter_gemini,
-    "qwen": _adapter_qwen,
-    "codex": _adapter_codex,
+    "qwen": _adapter_openrouter,       # qwen/qwen3-next-80b-a3b-instruct:free via OpenRouter
+    "nemotron": _adapter_openrouter,   # nvidia/nemotron-3-super-120b-a12b:free via OpenRouter
     "opencode": _adapter_opencode,
 }
 

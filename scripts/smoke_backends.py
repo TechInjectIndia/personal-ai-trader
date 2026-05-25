@@ -1,9 +1,10 @@
 """Smoke-test the competition CLI backends in helm.llm's registry.
 
-Runs ONE tiny headless call per backend (claude, gemini, qwen, codex,
+Runs ONE tiny headless call per backend (claude, gemini, qwen, nemotron,
 opencode) asking for a trivial JSON object, classifies each backend, and
-prints a result matrix. Designed to be re-run by the human after they log
-the NEEDS-AUTH backends in.
+prints a result matrix. qwen + nemotron go via OpenRouter (need
+OPENROUTER_API_KEY); the rest are local CLIs. Designed to be re-run by the
+human after they configure the NEEDS-AUTH backends.
 
 Classifications:
   OK            valid JSON returned by the backend
@@ -26,11 +27,20 @@ Exit code is always 0 (it's a diagnostic, not a gate).
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 import time
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 from helm import llm
+
+# Load .env so OpenRouter / Gemini keys are present, exactly like the production
+# runner (scripts/run_competitors.py) does — otherwise a bare smoke run reports
+# a false NEEDS-AUTH for key-based backends.
+load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
 # Fast smoke timeout — never use the 300s production timeout for diagnostics.
 SMOKE_TIMEOUT_S = 30
@@ -47,14 +57,20 @@ SMOKE_SCHEMA = {
     "required": ["ok"],
 }
 
-# Map each backend to the binary name + the env override consulted by its
-# adapter, so we can report "NOT-INSTALLED" without invoking the CLI.
+# CLI backends: map each to its binary name so we can report "NOT-INSTALLED"
+# without invoking the CLI.
 _BINARIES: dict[str, str] = {
     "claude": "claude",
     "gemini": "gemini",
-    "qwen": "qwen",
-    "codex": "codex",
     "opencode": "opencode",
+}
+
+# OpenRouter backends have no binary — they need OPENROUTER_API_KEY and a real
+# model id (the adapter requires one; DEFAULT_MODEL is a claude id and would
+# 404 on OpenRouter). These mirror the seeded competitors' model columns.
+_OPENROUTER_MODELS: dict[str, str] = {
+    "qwen": "qwen/qwen3-next-80b-a3b-instruct:free",
+    "nemotron": "nvidia/nemotron-3-super-120b-a12b:free",
 }
 
 # Substrings that, when present in an error, indicate the CLI ran but wants
@@ -83,15 +99,21 @@ _AUTH_HINTS = (
 
 def _classify(backend: str, timeout_s: int) -> tuple[str, str]:
     """Run one smoke call for `backend`. Returns (classification, note)."""
-    if shutil.which(_BINARIES[backend]) is None:
-        return "NOT-INSTALLED", f"`{_BINARIES[backend]}` not on PATH"
+    if backend in _OPENROUTER_MODELS:
+        if not os.environ.get("OPENROUTER_API_KEY"):
+            return "NEEDS-AUTH", "OPENROUTER_API_KEY not set in environment/.env"
+        model = _OPENROUTER_MODELS[backend]
+    else:
+        if shutil.which(_BINARIES[backend]) is None:
+            return "NOT-INSTALLED", f"`{_BINARIES[backend]}` not on PATH"
+        model = llm.DEFAULT_MODEL
 
     adapter = llm.CLI_ADAPTERS[backend]
     started = time.monotonic()
     try:
         result = adapter(
             SMOKE_SYSTEM, SMOKE_USER,
-            model=llm.DEFAULT_MODEL,
+            model=model,
             schema=SMOKE_SCHEMA,
             timeout_s=timeout_s,
         )

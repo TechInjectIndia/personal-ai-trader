@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dotenv import load_dotenv  # noqa: E402
 
+from helm.agents.base import is_autonomy_paused  # noqa: E402
 from helm.agents.engineer import process_one_task  # noqa: E402
 
 ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
@@ -38,6 +39,11 @@ def main() -> int:
     args = p.parse_args()
 
     load_dotenv(ENV_PATH, override=False)
+
+    if is_autonomy_paused():
+        if not args.quiet:
+            print("[engineer] autonomy paused — no-op")
+        return 0
 
     result = process_one_task()
 

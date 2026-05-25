@@ -149,7 +149,10 @@ def note_error(backend: str, error: str | None, *, now: datetime | None = None) 
         return False
     now = now or datetime.now(IST)
     cfg = backend_quota(backend)
-    paused_until = now + timedelta(minutes=cfg.window_minutes)
+    # A returned 429 is throttled by error_backoff_minutes when set (transient
+    # upstream rate-limit), else by the full window (daily-cap exhaustion).
+    backoff = cfg.error_backoff_minutes or cfg.window_minutes
+    paused_until = now + timedelta(minutes=backoff)
     with conn() as c:
         _load(c, backend)
         c.execute(

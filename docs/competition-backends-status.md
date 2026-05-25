@@ -17,13 +17,13 @@ classifies it as `OK` / `NEEDS-AUTH` / `NOT-INSTALLED` / `BAD-OUTPUT`.
 Code subscription, `opencode` runs on its bundled free models, and the other
 three are unauthenticated (awaiting the human's free-tier / subscription login).
 
-## Result matrix (last run: 2026-05-20, this VPS)
+## Result matrix (last run: 2026-05-21, this VPS)
 
 | backend  | package              | install result | smoke result | classification | notes |
 |----------|----------------------|----------------|--------------|----------------|-------|
 | claude   | (pre-installed)      | already on PATH (`~/.local/bin/claude`) | `{"ok": true}` in ~6–10s | **OK** | Subscription auth via Claude Code. Proven production path, unchanged. |
 | opencode | `opencode-ai@1.15.5` | installed → `~/.npm-global/bin/opencode` | `{"ok": true}` in ~5–9s | **OK** | Used opencode's bundled gateway model `opencode/big-pickle`; free `*-free` models also listed (`opencode models`). 0 stored credentials, yet works out of the box. |
-| gemini   | `@google/gemini-cli@0.42.0` | installed → `~/.npm-global/bin/gemini` | exit 41, demands an auth method | **NEEDS-AUTH** | "Please set an Auth method in `~/.gemini/settings.json` or set `GEMINI_API_KEY` / `GOOGLE_GENAI_USE_VERTEXAI` / `GOOGLE_GENAI_USE_GCA`." |
+| gemini   | `@google/gemini-cli@0.42.0` | installed → `~/.npm-global/bin/gemini` | `{"ok": true}` in ~7s | **OK** | Auth via `GEMINI_API_KEY` in `.env` (GCP API key `helm-gemini-cli`, project `ti-leds-gen`, scoped to `generativelanguage.googleapis.com`, free tier). Adapter passes `--skip-trust` to bypass the workspace-trust gate (else exit 55). |
 | qwen     | `@qwen-code/qwen-code@0.15.11` | installed → `~/.npm-global/bin/qwen` | exit 1, "No auth type is selected" | **NEEDS-AUTH** | Wants an auth type configured before non-interactive use. Free **Qwen-OAuth** available. |
 | codex    | `@openai/codex@0.132.0` | installed → `~/.npm-global/bin/codex` | exit 1, `401 Unauthorized` from `wss://api.openai.com` | **NEEDS-AUTH** | `codex login status` → "Not logged in". Adapter passes `--skip-git-repo-check --sandbox read-only` so it reaches the model; the only blocker is auth. |
 
@@ -53,8 +53,13 @@ them. Run each in a terminal where a browser (or device-code paste) is
 reachable, then re-run `python scripts/smoke_backends.py` to confirm the
 backend flips to `OK`. Prefer the **free** auth options to keep $0 spend.
 
-### gemini (Google — free tier available)
-Either set a free Google AI Studio key, or do the interactive Google login:
+### gemini (Google — DONE ✅, 2026-05-21)
+Resolved via a GCP API key. A key named `helm-gemini-cli` was minted under
+project `ti-leds-gen` (account `techinjectindia@gmail.com`), scoped to
+`generativelanguage.googleapis.com` (free tier), and written to `.env` as
+`GEMINI_API_KEY`. The runner loads `.env`, so the gemini subprocess inherits it.
+No interactive login needed. To rotate: `gcloud services api-keys create … `
+then replace the `.env` value. Original (now-unneeded) options below for reference:
 
 ```bash
 # Option A — free API key (simplest, headless-friendly):

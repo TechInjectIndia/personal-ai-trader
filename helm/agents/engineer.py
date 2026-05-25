@@ -38,17 +38,24 @@ from helm.agents.base import (
     git_diff_stat,
     git_head_sha,
     pm2_reload,
+    record_config_version,
     record_release,
     record_run,
     run_cmd,
+    unverified_config_versions,
     unverified_releases,
 )
+from helm.config import HOUSE_COMPETITOR_ID
 
 # Task types this agent can execute. Anything else stays as ``needs_human``.
-ALLOWED_TYPES: set[str] = {
+# The first group are house/code tasks (commit + pytest); the last two are
+# freestyle-competitor config edits (Postgres data, no git, no pytest).
+CODE_TYPES: set[str] = {
     "prompt_tweak", "param_change", "add_filter",
     "setting_override", "add_strategy_variant", "bug_fix",
 }
+CONFIG_TYPES: set[str] = {"persona_edit", "strategy_config_edit"}
+ALLOWED_TYPES: set[str] = CODE_TYPES | CONFIG_TYPES
 
 # Files the prompt-tweak mutator is allowed to touch. ``bug_fix`` lifts this
 # restriction (it can target any file) but still requires an exact-anchor
@@ -66,6 +73,23 @@ STRATEGY_CLASSES = {
 # Maximum size of the diff preview we tuck into agent_runs.trace. 2 KB keeps
 # the JSONB rows cheap to read in the dashboard.
 TRACE_DIFF_LIMIT = 2048
+
+# ─── freestyle config-edit bounds ─────────────────────────────────────
+# A persona is free-form prose but bounded so a runaway edit can't bloat the
+# system prompt or smuggle control chars into the snapshot template.
+PERSONA_MIN_LEN = 50
+PERSONA_MAX_LEN = 2000
+
+# strategy_config is a flat object of numeric knobs. We don't know every key a
+# freestyle planner might invent, so we bounds-check by VALUE shape, not key
+# name: integer-ish counts in [INT_LO, INT_HI], everything else (multipliers,
+# ratios, thresholds) in [FLOAT_LO, FLOAT_HI]. Non-scalar values are rejected.
+STRATEGY_CONFIG_FLOAT_LO = 0.0
+STRATEGY_CONFIG_FLOAT_HI = 10.0
+STRATEGY_CONFIG_INT_LO = 1
+STRATEGY_CONFIG_INT_HI = 50
+STRATEGY_CONFIG_MAX_KEYS = 30
+STRATEGY_CONFIG_KEY_MAX_LEN = 60
 
 
 # ─── result type ──────────────────────────────────────────────────────
@@ -508,7 +532,9 @@ def _mut_bug_fix(spec: dict) -> MutatorResult:
     )
 
 
-# Registry of dispatchable mutators. Keyed by task_type.
+# Registry of dispatchable code mutators. Keyed by task_type. Config edits
+# (persona / strategy_config) are NOT here — they need competitor_id and write
+# to Postgres, so they go through the dedicated config-mutator path below.
 MUTATORS: dict[str, Callable[[dict], MutatorResult]] = {
     "prompt_tweak":        _mut_prompt_tweak,
     "param_change":        _mut_param_change,
@@ -517,6 +543,154 @@ MUTATORS: dict[str, Callable[[dict], MutatorResult]] = {
     "add_strategy_variant": _mut_add_strategy_variant,
     "bug_fix":             _mut_bug_fix,
 }
+
+
+# ─── freestyle config validation + mutators ───────────────────────────
+
+def validate_persona(value: object) -> tuple[bool, str]:
+    """Shared persona check (Engineer pre-write + Tester post-write).
+
+    A persona must be a non-empty str of bounded length with no control chars
+    (newlines/tabs allowed — they're whitespace, not control). Returns
+    (ok, reason)."""
+    if not isinstance(value, str):
+        return False, "persona must be a string"
+    text = value.strip()
+    if not text:
+        return False, "persona is empty"
+    if not (PERSONA_MIN_LEN <= len(text) <= PERSONA_MAX_LEN):
+        return False, (f"persona length {len(text)} outside "
+                       f"[{PERSONA_MIN_LEN}, {PERSONA_MAX_LEN}]")
+    if any(ord(ch) < 32 and ch not in "\n\r\t" for ch in text):
+        return False, "persona contains control characters"
+    return True, ""
+
+
+def validate_strategy_config(value: object) -> tuple[bool, str]:
+    """Shared strategy_config check (Engineer merge result + Tester re-read).
+
+    Must be a flat JSON object whose values are all scalar numbers within sane
+    bounds: integers (bool excluded) in [INT_LO, INT_HI], floats in
+    [FLOAT_LO, FLOAT_HI]. Keys are short strings. Returns (ok, reason)."""
+    if not isinstance(value, dict):
+        return False, "strategy_config must be an object"
+    if len(value) > STRATEGY_CONFIG_MAX_KEYS:
+        return False, f"strategy_config has too many keys ({len(value)})"
+    for k, v in value.items():
+        if not isinstance(k, str) or not k or len(k) > STRATEGY_CONFIG_KEY_MAX_LEN:
+            return False, f"bad strategy_config key {k!r}"
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return False, f"strategy_config[{k!r}] must be a number, got {type(v).__name__}"
+        if isinstance(v, int):
+            if not (STRATEGY_CONFIG_INT_LO <= v <= STRATEGY_CONFIG_INT_HI):
+                return False, (f"strategy_config[{k!r}]={v} outside int bounds "
+                               f"[{STRATEGY_CONFIG_INT_LO}, {STRATEGY_CONFIG_INT_HI}]")
+        elif not (STRATEGY_CONFIG_FLOAT_LO <= v <= STRATEGY_CONFIG_FLOAT_HI):
+            return False, (f"strategy_config[{k!r}]={v} outside float bounds "
+                           f"[{STRATEGY_CONFIG_FLOAT_LO}, {STRATEGY_CONFIG_FLOAT_HI}]")
+    return True, ""
+
+
+@dataclass
+class ConfigMutatorResult:
+    """Outcome of a freestyle config edit, with the snapshot for the version row."""
+    ok: bool
+    summary: str
+    field: str = ""                          # 'persona' | 'strategy_config'
+    old_value: object = None                 # JSON-serialisable prior value
+    new_value: object = None                 # JSON-serialisable applied value
+    mandate_week: object = None              # date for strategy_config, else None
+    error: str | None = None
+
+
+def _mut_persona_edit(competitor_id: str, spec: dict) -> ConfigMutatorResult:
+    """Replace a competitor's persona. spec = {new_persona, diff_summary}."""
+    new_persona = spec.get("new_persona")
+    ok, why = validate_persona(new_persona)
+    if not ok:
+        return ConfigMutatorResult(False, "bad persona", error=why)
+    new_persona = str(new_persona).strip()
+
+    from helm.data.store import conn
+    with conn() as c:
+        row = c.execute(
+            "SELECT persona FROM competitors WHERE id = %s", (competitor_id,),
+        ).fetchone()
+        if row is None:
+            return ConfigMutatorResult(False, "competitor not found",
+                                       error=f"no competitor {competitor_id!r}")
+        old_persona = row["persona"]
+        c.execute("UPDATE competitors SET persona = %s WHERE id = %s",
+                  (new_persona, competitor_id))
+
+    diff = str(spec.get("diff_summary") or "").strip()[:300]
+    summary = f"persona edit for {competitor_id}" + (f": {diff}" if diff else "")
+    return ConfigMutatorResult(
+        ok=True, summary=summary, field="persona",
+        old_value=old_persona, new_value=new_persona, mandate_week=None,
+    )
+
+
+def _mut_strategy_config_edit(competitor_id: str, spec: dict) -> ConfigMutatorResult:
+    """Merge numeric overrides into this week's strategy_config.
+
+    spec = {param_overrides: {key: number}, diff_summary}. The current week's
+    competitor_mandates row MUST exist (the planner runs weekly). The FULL
+    prior strategy_config is captured as old_value; the merged result is
+    bounds-checked before write.
+    """
+    overrides = spec.get("param_overrides")
+    if not isinstance(overrides, dict) or not overrides:
+        return ConfigMutatorResult(False, "bad param_overrides",
+                                   error="param_overrides must be a non-empty object")
+    ok, why = validate_strategy_config(overrides)
+    if not ok:
+        return ConfigMutatorResult(False, "bad param_overrides", error=why)
+
+    from helm.competition.competitors import week_start
+    from helm.data.store import conn
+    wk = week_start()
+    with conn() as c:
+        row = c.execute(
+            "SELECT strategy_config FROM competitor_mandates "
+            "WHERE competitor_id = %s AND week_start = %s",
+            (competitor_id, wk),
+        ).fetchone()
+        if row is None:
+            return ConfigMutatorResult(
+                False, "no mandate this week",
+                error=(f"no competitor_mandates row for {competitor_id!r} "
+                       f"week_start={wk} — the mandate planner must run first"))
+        old_config = row["strategy_config"] if isinstance(row["strategy_config"], dict) else {}
+        merged = {**old_config, **overrides}
+        ok, why = validate_strategy_config(merged)
+        if not ok:
+            return ConfigMutatorResult(False, "merged config out of bounds", error=why)
+        c.execute(
+            "UPDATE competitor_mandates SET strategy_config = %s::jsonb "
+            "WHERE competitor_id = %s AND week_start = %s",
+            (json.dumps(merged), competitor_id, wk),
+        )
+
+    diff = str(spec.get("diff_summary") or "").strip()[:300]
+    keys = ", ".join(sorted(overrides))
+    summary = f"strategy_config edit for {competitor_id} ({keys})" + (
+        f": {diff}" if diff else "")
+    return ConfigMutatorResult(
+        ok=True, summary=summary, field="strategy_config",
+        old_value=old_config, new_value=merged, mandate_week=wk,
+    )
+
+
+def apply_config_mutator(task_type: str, competitor_id: str,
+                         spec: dict) -> ConfigMutatorResult:
+    """Dispatch to the freestyle config mutator for `task_type`."""
+    if task_type == "persona_edit":
+        return _mut_persona_edit(competitor_id, spec)
+    if task_type == "strategy_config_edit":
+        return _mut_strategy_config_edit(competitor_id, spec)
+    return ConfigMutatorResult(False, f"no config mutator for {task_type!r}",
+                               error=f"unsupported config task_type {task_type}")
 
 
 def apply_mutator(task_type: str, spec: dict) -> MutatorResult:
@@ -565,9 +739,12 @@ def process_one_task() -> dict | None:
     enough context to print a one-liner.
     """
     # Backpressure check BEFORE we claim — saves a needless claim/unclaim if
-    # the tester is behind.
-    pending = unverified_releases()
-    if len(pending) >= 2:
+    # the tester is behind. Gate on BOTH pending code releases AND pending
+    # freestyle config versions so neither queue piles up while the Tester
+    # catches up.
+    if len(unverified_releases()) >= 2:
+        return None
+    if len(unverified_config_versions()) >= 2:
         return None
 
     with record_run("engineer", "process_one_task") as run:
@@ -584,6 +761,7 @@ def _process_one_task_inner(run: RunHandle) -> dict | None:
     task_id = task["id"]
     task_type = task["task_type"]
     title = task["title"]
+    competitor_id = task.get("competitor_id")
     spec = task["spec"] or {}
     if isinstance(spec, str):
         # JSONB usually returns dict via dict_row, but be defensive.
@@ -592,8 +770,37 @@ def _process_one_task_inner(run: RunHandle) -> dict | None:
         except json.JSONDecodeError:
             spec = {}
 
-    run.set(task_id=task_id)
-    run.add_trace(task_type=task_type, title=title, spec=spec)
+    run.set(task_id=task_id, competitor_id=competitor_id)
+    run.add_trace(task_type=task_type, title=title, spec=spec,
+                  competitor_id=competitor_id)
+
+    is_house = competitor_id is None or competitor_id == HOUSE_COMPETITOR_ID
+
+    # ── cross-mode guard ──────────────────────────────────────────────
+    # A code task_type only makes sense for the house (it edits the shared
+    # codebase); a config task_type only makes sense for a freestyle
+    # competitor (it edits that competitor's persona / strategy_config). Reject
+    # the cross-products so a mis-tagged task can't, e.g., commit code "for" a
+    # freestyle agent or rewrite the house persona.
+    if task_type in CONFIG_TYPES and is_house:
+        msg = f"config task_type {task_type!r} not valid for house"
+        complete_task(task_id, status="failed", error=msg)
+        run.outcome = "error"
+        run.summary = msg
+        return {"ok": False, "task_id": task_id, "reason": msg}
+    if task_type in CODE_TYPES and not is_house:
+        msg = (f"code task_type {task_type!r} not valid for freestyle "
+               f"competitor {competitor_id!r}")
+        complete_task(task_id, status="failed", error=msg)
+        run.outcome = "error"
+        run.summary = msg
+        return {"ok": False, "task_id": task_id, "reason": msg}
+
+    # ── freestyle config path (no git, no ruff, no pytest) ─────────────
+    if task_type in CONFIG_TYPES:
+        assert competitor_id is not None  # CONFIG_TYPES + not is_house ⇒ set
+        return _process_config_task(run, task_id, task_type, title,
+                                    competitor_id, spec)
 
     if task_type not in MUTATORS:
         msg = f"unsupported task_type {task_type!r}"
@@ -716,6 +923,44 @@ def _process_one_task_inner(run: RunHandle) -> dict | None:
         "commit_sha": commit_sha,
         "summary": result.summary,
         "files_touched": result.files_touched,
+    }
+
+
+def _process_config_task(run: RunHandle, task_id: int, task_type: str,
+                         title: str, competitor_id: str, spec: dict) -> dict:
+    """Freestyle config edit: apply a Postgres data change, record a config
+    version, mark the task done. NO git, NO ruff, NO pytest — these are data
+    edits to a competitor's persona / strategy_config, not code.
+    """
+    result = apply_config_mutator(task_type, competitor_id, spec)
+    if not result.ok:
+        complete_task(task_id, status="failed",
+                      error=result.error or result.summary)
+        run.outcome = "error"
+        run.summary = f"config mutator failed: {result.error or result.summary}"
+        return {"ok": False, "task_id": task_id, "reason": result.error}
+
+    version_id = record_config_version(
+        competitor_id=competitor_id,
+        task_id=task_id,
+        field=result.field,
+        mandate_week=result.mandate_week,
+        old_value=result.old_value,
+        new_value=result.new_value,
+    )
+    run.add_trace(config_version_id=version_id, field=result.field)
+    complete_task(task_id, status="done", release_id=None)
+
+    run.outcome = "ok"
+    run.summary = f"[task {task_id}] {result.summary}"
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "release_id": None,
+        "config_version_id": version_id,
+        "competitor_id": competitor_id,
+        "field": result.field,
+        "summary": result.summary,
     }
 
 

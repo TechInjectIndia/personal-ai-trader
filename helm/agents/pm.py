@@ -38,9 +38,10 @@ from helm.agents.base import (
     build_goal_brief,
     create_task,
     record_run,
+    unverified_config_versions,
     unverified_releases,
 )
-from helm.config import DECIDER_MODEL_DEFAULT
+from helm.config import DECIDER_MODEL_DEFAULT, HOUSE_COMPETITOR_ID, HOUSE_TRADE_FILTER
 from helm.data.store import conn, insert_audit
 from helm.llm import LLMError, complete_json
 
@@ -50,13 +51,25 @@ PM_MAX_TOKENS = 2000
 PM_TEMPERATURE = 0.2
 
 # Closed set the engineer knows how to act on. Anything else lands as
-# `needs_human` and surfaces for manual handling.
-VALID_ENGINEER_TASK_TYPES = (
+# `needs_human` and surfaces for manual handling. The first group are
+# house/code task types (commit + pytest); the last two are freestyle-only
+# config edits (a competitor's persona / strategy_config).
+HOUSE_ENGINEER_TASK_TYPES = (
     "prompt_tweak",
     "param_change",
     "add_filter",
     "setting_override",
     "add_strategy_variant",
+)
+FREESTYLE_ENGINEER_TASK_TYPES = (
+    "persona_edit",
+    "strategy_config_edit",
+)
+# Superset for the LLM output schema enum; per-agent applicability is enforced
+# in _validate_suggestion using the run's competitor_id.
+VALID_ENGINEER_TASK_TYPES = (
+    *HOUSE_ENGINEER_TASK_TYPES,
+    *FREESTYLE_ENGINEER_TASK_TYPES,
     "needs_human",
 )
 
@@ -122,15 +135,29 @@ Principles (in priority order):
 3. ONE CHANGE PER TASK. Even if two proposals overlap, ship them as separate
    tasks so the Tester can attribute regressions correctly.
 
-4. RESPECT THE ENGINEER'S CLOSED SURFACE. Valid task_types:
+4. RESPECT THE ENGINEER'S CLOSED SURFACE. Valid task_types depend on WHICH
+   agent you are reviewing (see `agent` in the input):
+
+   HOUSE agent (`agent.id` = "house-claude") — edits the shared codebase:
        prompt_tweak       — wording in the decider system prompt
        param_change       — numeric knob (cap, threshold, lookback)
        add_filter         — new gate in risk/strategy (entry guard)
        setting_override   — write a row to the `settings` table
        add_strategy_variant — new strategy class (heaviest)
        needs_human        — out-of-surface; PM punts to a human
+
+   FREESTYLE agent (any other `agent.id`) — has NO code of its own. Its only
+   levers are DATA in Postgres: its persona and its weekly strategy_config.
+   Valid task_types are ONLY:
+       persona_edit          — rewrite this competitor's trading persona/edge
+       strategy_config_edit  — nudge its weekly numeric strategy params
+       needs_human           — out-of-surface; PM punts to a human
+   A code task_type (prompt_tweak/param_change/add_filter/setting_override/
+   add_strategy_variant) is INVALID for a freestyle agent and will be
+   rejected — never queue one for a freestyle competitor.
+
    If the only fix is out-of-surface, file `needs_human` and stop — never
-   water down into a fake `prompt_tweak`.
+   water down into a fake task of the wrong type.
 
 5. EVIDENCE OR DON'T SHIP. Every task's rationale must cite the retros,
    metrics, or recurrence count that motivated it. No fix without evidence.
@@ -213,6 +240,29 @@ field names. Concrete examples are non-negotiable.
     spec = {"target_file": "<path>", "anchor": "<unique substring>",
             "replacement": "<exact new string>", "reason": "<why>"}
 
+  * persona_edit — FREESTYLE ONLY. Rewrite a competitor's persona/edge.
+    spec = {
+      "new_persona": "<the full replacement persona text, 50–2000 chars,
+                      describing the trading style/edge in plain prose>",
+      "diff_summary": "<one line on what changed and why>"
+    }
+    Example: {"new_persona": "Momentum trader. Buys the strongest large-cap "
+              "that has cleanly cleared its morning range on rising volume; "
+              "cuts losers fast, lets winners run to a 1.5x-risk target. "
+              "Avoids the lunch lull and never holds into the last 20 minutes.",
+              "diff_summary": "add lunch-lull avoidance after midday churn losses"}
+
+  * strategy_config_edit — FREESTYLE ONLY. Nudge this week's numeric params.
+    spec = {
+      "param_overrides": {"<short_key>": <number>, ...},
+      "diff_summary": "<one line on what changed and why>"
+    }
+    Values must be sane scalars: integer counts in [1, 50], multipliers /
+    ratios / thresholds in [0, 10]. The override is MERGED into the existing
+    weekly strategy_config (so omit keys you don't want to change).
+    Example: {"param_overrides": {"max_positions": 2, "stop_atr_mult": 1.5},
+              "diff_summary": "tighten stops and concurrency after choppy week"}
+
   * needs_human — out-of-surface; PM punts to a human.
     spec = {"reason": "<what & why>", "suggested_owner": "<role>"}
 
@@ -239,33 +289,48 @@ OUTPUT FORMAT — strict JSON, no markdown, no prose outside the object:
 # ─── inputs ──────────────────────────────────────────────────────────
 
 
-def _last_successful_pm_run() -> dict | None:
-    """Most recent PM run that finished with outcome='ok'. Drives the
-    'anything new since then' skip check."""
+def _trade_filter(competitor_id: str) -> tuple[str, tuple]:
+    """SQL fragment + args to scope paper_trades/signals/decisions to one agent.
+
+    House (competitor_id='house-claude') uses the (NULL OR ='house-claude')
+    filter since the live cron path inserts NULL; freestyle uses an exact
+    competitor_id match."""
+    if competitor_id == HOUSE_COMPETITOR_ID:
+        return HOUSE_TRADE_FILTER, ()
+    return "competitor_id = %s", (competitor_id,)
+
+
+def _last_successful_pm_run(competitor_id: str) -> dict | None:
+    """Most recent PM run for this agent that finished with outcome='ok'.
+    Drives the 'anything new since then' skip check. agent_runs.competitor_id
+    is canonicalised to the loop id (house = 'house-claude')."""
     with conn() as c:
         return c.execute(
             "SELECT id, started_ts, finished_ts FROM agent_runs "
-            "WHERE agent = 'pm' AND outcome = 'ok' "
-            "ORDER BY started_ts DESC LIMIT 1"
+            "WHERE agent = 'pm' AND outcome = 'ok' AND competitor_id = %s "
+            "ORDER BY started_ts DESC LIMIT 1",
+            (competitor_id,),
         ).fetchone()
 
 
-def _new_trades_since(since: datetime | None) -> int:
-    sql = "SELECT COUNT(*) AS n FROM paper_trades WHERE status = 'CLOSED'"
-    args: tuple = ()
+def _new_trades_since(since: datetime | None, competitor_id: str) -> int:
+    trade_filter, fargs = _trade_filter(competitor_id)
+    sql = (f"SELECT COUNT(*) AS n FROM paper_trades "
+           f"WHERE status = 'CLOSED' AND {trade_filter}")  # noqa: S608
+    args: tuple = fargs
     if since is not None:
         sql += " AND exit_ts > %s"
-        args = (since,)
+        args = (*fargs, since)
     with conn() as c:
         return int(c.execute(sql, args).fetchone()["n"])
 
 
-def _new_proposals_since(since: datetime | None) -> int:
-    sql = "SELECT COUNT(*) AS n FROM improvement_proposals"
-    args: tuple = ()
+def _new_proposals_since(since: datetime | None, competitor_id: str) -> int:
+    sql = "SELECT COUNT(*) AS n FROM improvement_proposals WHERE competitor_id = %s"
+    args: tuple = (competitor_id,)
     if since is not None:
-        sql += " WHERE created_ts > %s"
-        args = (since,)
+        sql += " AND created_ts > %s"
+        args = (competitor_id, since)
     with conn() as c:
         return int(c.execute(sql, args).fetchone()["n"])
 
@@ -279,8 +344,8 @@ def _cluster_key(title: str) -> str:
     return " ".join(t.split())
 
 
-def _open_proposals_30d() -> list[dict]:
-    """Open proposals + parent-retro context, clustered by title key.
+def _open_proposals_30d(competitor_id: str) -> list[dict]:
+    """Open proposals + parent-retro context for one agent, clustered by title.
 
     Each row is a single proposal but carries `recurrence` = how many open
     proposals in the window share the same cluster key. That's the headline
@@ -298,8 +363,10 @@ def _open_proposals_30d() -> list[dict]:
             JOIN trade_retrospectives r ON r.id = p.retro_id
             WHERE p.status = 'open'
               AND p.created_ts >= now() - interval '30 days'
+              AND p.competitor_id = %s
             ORDER BY p.created_ts DESC
-            """
+            """,
+            (competitor_id,),
         ))
 
     counts: dict[str, int] = defaultdict(int)
@@ -328,7 +395,7 @@ def _open_proposals_30d() -> list[dict]:
     return out
 
 
-def _recent_retros_7d(limit: int = 10) -> list[dict]:
+def _recent_retros_7d(competitor_id: str, limit: int = 10) -> list[dict]:
     with conn() as c:
         rows = list(c.execute(
             """
@@ -336,10 +403,11 @@ def _recent_retros_7d(limit: int = 10) -> list[dict]:
                    decision_quality_score, summary_layman, created_ts
             FROM trade_retrospectives
             WHERE created_ts >= now() - interval '7 days'
+              AND competitor_id = %s
             ORDER BY created_ts DESC
             LIMIT %s
             """,
-            (limit,),
+            (competitor_id, limit),
         ))
     return [
         {
@@ -355,20 +423,30 @@ def _recent_retros_7d(limit: int = 10) -> list[dict]:
     ]
 
 
-def _recent_engineer_runs(limit: int = 5) -> list[dict]:
-    """What the engineer has tried recently — keeps the PM from re-suggesting
-    the same change while a release is still in flight or just landed."""
+def _recent_engineer_runs(competitor_id: str, limit: int = 5) -> list[dict]:
+    """What the engineer has tried recently for this agent — keeps the PM from
+    re-suggesting the same change while a change is in flight or just landed.
+
+    House engineer runs on code tasks aren't always tagged with a competitor_id
+    (the historic code path inserts NULL), so the house view uses the
+    (NULL OR ='house-claude') filter; freestyle uses an exact match.
+    """
+    fargs: tuple
+    if competitor_id == HOUSE_COMPETITOR_ID:
+        run_filter, fargs = HOUSE_TRADE_FILTER, ()
+    else:
+        run_filter, fargs = "competitor_id = %s", (competitor_id,)
     with conn() as c:
         rows = list(c.execute(
-            """
+            f"""
             SELECT id, started_ts, finished_ts, task_id, release_id,
                    outcome, summary
             FROM agent_runs
-            WHERE agent = 'engineer'
+            WHERE agent = 'engineer' AND {run_filter}
             ORDER BY started_ts DESC
             LIMIT %s
-            """,
-            (limit,),
+            """,  # noqa: S608 — filter is a hardcoded literal
+            (*fargs, limit),
         ))
     return [
         {
@@ -386,18 +464,29 @@ def _recent_engineer_runs(limit: int = 5) -> list[dict]:
 # ─── prompt builder ──────────────────────────────────────────────────
 
 
-def _build_user_prompt(goal: GoalBrief, proposals: list[dict],
+def _build_user_prompt(agent: dict, goal: GoalBrief, proposals: list[dict],
                        retros: list[dict], engineer_runs: list[dict]) -> str:
+    is_house = agent["id"] == HOUSE_COMPETITOR_ID
+    valid_types = list(
+        HOUSE_ENGINEER_TASK_TYPES if is_house else FREESTYLE_ENGINEER_TASK_TYPES
+    ) + ["needs_human"]
     payload = {
         "now_ist": datetime.now(IST).strftime("%Y-%m-%d %H:%M"),
+        "agent": agent,
+        "valid_task_types_for_this_agent": valid_types,
         "goal_brief": goal.to_prompt_dict(),
         "open_proposals_last_30d": proposals,
         "recent_retros_last_7d": retros,
         "recent_engineer_runs": engineer_runs,
         "notes": (
-            "recurrence = how many open proposals share the same loose title "
-            "cluster. That is the single strongest signal — quote it in your "
-            "rationale. Queue 0–3 tasks. Empty is fine if nothing recurs."
+            "You are reviewing ONE agent (see `agent`). "
+            + ("This is the HOUSE agent — it edits the shared codebase; use "
+               "code task_types." if is_house else
+               "This is a FREESTYLE competitor — it has no code; use ONLY "
+               "persona_edit / strategy_config_edit / needs_human.")
+            + " recurrence = how many open proposals share the same loose "
+            "title cluster. That is the single strongest signal — quote it in "
+            "your rationale. Queue 0–3 tasks. Empty is fine if nothing recurs."
         ),
     }
     return (
@@ -409,10 +498,15 @@ def _build_user_prompt(goal: GoalBrief, proposals: list[dict],
 # ─── apply ───────────────────────────────────────────────────────────
 
 
-def _validate_suggestion(s: dict) -> tuple[bool, str]:
+def _validate_suggestion(s: dict, *, is_house: bool) -> tuple[bool, str]:
     """Sanity-check one LLM suggestion before we act on it. Returns
     (ok, reason). Reasons surface in the run trace so misbehaving LLMs are
-    debuggable."""
+    debuggable.
+
+    `is_house` gates which task_types are valid for the agent under review:
+    code types are house-only, config types are freestyle-only; `needs_human`
+    is always valid.
+    """
     action = s.get("action")
     if action not in ("create_task", "reject_proposal"):
         return False, f"invalid action {action!r}"
@@ -420,6 +514,10 @@ def _validate_suggestion(s: dict) -> tuple[bool, str]:
     task_type = s.get("task_type")
     if task_type not in VALID_ENGINEER_TASK_TYPES:
         return False, f"invalid task_type {task_type!r}"
+    if is_house and task_type in FREESTYLE_ENGINEER_TASK_TYPES:
+        return False, f"task_type {task_type!r} is freestyle-only, not valid for house"
+    if not is_house and task_type in HOUSE_ENGINEER_TASK_TYPES:
+        return False, f"task_type {task_type!r} is house-only, not valid for freestyle"
 
     title = str(s.get("title") or "").strip()
     rationale = str(s.get("rationale") or "").strip()
@@ -464,67 +562,94 @@ def _apply_proposal_status(proposal_id: int, new_status: str, note: str) -> bool
     return row is not None
 
 
-# ─── public entry point ──────────────────────────────────────────────
+# ─── per-agent review body ───────────────────────────────────────────
 
 
-def run_weekly_review(*, model: str | None = None, mode: str | None = None,
-                      force: bool = False) -> dict:
-    """Run one PM review. Returns a summary dict; raises on internal errors.
+def _agent_descriptor(competitor_id: str) -> dict:
+    """Compact agent record for the prompt (id + persona + freestyle flag)."""
+    is_house = competitor_id == HOUSE_COMPETITOR_ID
+    persona = None
+    with conn() as c:
+        row = c.execute(
+            "SELECT name, persona FROM competitors WHERE id = %s",
+            (competitor_id,),
+        ).fetchone()
+    name = row["name"] if row else competitor_id
+    persona = row["persona"] if row else None
+    return {
+        "id": competitor_id,
+        "name": name,
+        "kind": "house" if is_house else "freestyle",
+        "persona": persona,
+    }
 
-    The returned dict always has the same keys so the CLI can render a
-    uniform summary regardless of whether work happened.
+
+def _unverified_for_agent(competitor_id: str) -> list[dict]:
+    """The agent's in-flight change(s) — house releases, freestyle config
+    versions — gating the next ship (one change at a time per agent)."""
+    if competitor_id == HOUSE_COMPETITOR_ID:
+        return unverified_releases()
+    return unverified_config_versions(competitor_id)
+
+
+def _review_one_agent(competitor_id: str, *, model: str, mode: str,
+                      force: bool) -> dict:
+    """Run one PM review for a single agent (house or freestyle).
+
+    Returns a summary dict with a stable key set (plus `competitor_id`) so the
+    CLI can render a uniform per-agent summary regardless of whether work
+    happened. Each agent's run lands its own `agent_runs` row tagged with the
+    competitor.
     """
-    model = model or os.environ.get("DECIDER_MODEL", DECIDER_MODEL_DEFAULT)
-    mode = (mode or os.environ.get("LLM_MODE", "cli")).strip().lower()
+    is_house = competitor_id == HOUSE_COMPETITOR_ID
 
-    with record_run("pm", "weekly_review", model=model, llm_mode=mode) as run:
+    def _deferred(run, reason: str, **trace) -> dict:
+        run.outcome = "noop"
+        run.summary = f"deferred — {reason}"
+        run.add_trace(deferred=True, reason=reason, competitor_id=competitor_id,
+                      **trace)
+        return {
+            "run_id": run.run_id,
+            "competitor_id": competitor_id,
+            "tasks_created": [],
+            "proposals_accepted": [],
+            "proposals_rejected": [],
+            "deferred": True,
+            "reason": reason,
+        }
+
+    with record_run("pm", "weekly_review", model=model, llm_mode=mode,
+                    competitor_id=competitor_id) as run:
         # ── skip rules ────────────────────────────────────────────────
-        unverified = unverified_releases()
+        unverified = _unverified_for_agent(competitor_id)
         if unverified and not force:
-            reason = f"{len(unverified)} unverified release(s) in flight"
-            run.outcome = "noop"
-            run.summary = f"deferred — {reason}"
-            run.add_trace(deferred=True, reason=reason,
-                          unverified_release_ids=[r["id"] for r in unverified])
+            change_word = "release" if is_house else "config version"
+            reason = f"{len(unverified)} unverified {change_word}(s) in flight"
             insert_audit("agents", "pm_deferred",
-                         {"reason": reason,
+                         {"reason": reason, "competitor_id": competitor_id,
                           "unverified": [r["id"] for r in unverified]})
-            return {
-                "run_id": run.run_id,
-                "tasks_created": [],
-                "proposals_accepted": [],
-                "proposals_rejected": [],
-                "deferred": True,
-                "reason": reason,
-            }
+            return _deferred(run, reason,
+                             unverified_ids=[r["id"] for r in unverified])
 
-        last_run = _last_successful_pm_run()
+        last_run = _last_successful_pm_run(competitor_id)
         since = last_run["finished_ts"] if last_run else None
-        new_trades = _new_trades_since(since)
-        new_proposals = _new_proposals_since(since)
+        new_trades = _new_trades_since(since, competitor_id)
+        new_proposals = _new_proposals_since(since, competitor_id)
         if not force and new_trades == 0 and new_proposals == 0:
             reason = "no new closed trades and no new proposals since last PM run"
-            run.outcome = "noop"
-            run.summary = f"deferred — {reason}"
-            run.add_trace(deferred=True, reason=reason,
-                          last_run_id=last_run["id"] if last_run else None,
-                          new_trades=new_trades, new_proposals=new_proposals)
-            return {
-                "run_id": run.run_id,
-                "tasks_created": [],
-                "proposals_accepted": [],
-                "proposals_rejected": [],
-                "deferred": True,
-                "reason": reason,
-            }
+            return _deferred(run, reason,
+                             last_run_id=last_run["id"] if last_run else None,
+                             new_trades=new_trades, new_proposals=new_proposals)
 
-        # ── gather inputs ─────────────────────────────────────────────
-        goal = build_goal_brief()
-        proposals = _open_proposals_30d()
-        retros = _recent_retros_7d()
-        eng_runs = _recent_engineer_runs()
+        # ── gather inputs (all scoped to this agent) ──────────────────
+        agent = _agent_descriptor(competitor_id)
+        goal = build_goal_brief(competitor_id=competitor_id)
+        proposals = _open_proposals_30d(competitor_id)
+        retros = _recent_retros_7d(competitor_id)
+        eng_runs = _recent_engineer_runs(competitor_id)
 
         run.add_trace(
+            competitor_id=competitor_id,
             inputs={
                 "open_proposals_count": len(proposals),
                 "recent_retros_count": len(retros),
@@ -535,7 +660,7 @@ def run_weekly_review(*, model: str | None = None, mode: str | None = None,
         )
 
         # ── ask the LLM ───────────────────────────────────────────────
-        user = _build_user_prompt(goal, proposals, retros, eng_runs)
+        user = _build_user_prompt(agent, goal, proposals, retros, eng_runs)
         try:
             parsed = complete_json(
                 SYSTEM_PROMPT, user,
@@ -563,7 +688,7 @@ def run_weekly_review(*, model: str | None = None, mode: str | None = None,
         for s in suggestions_raw[:3]:
             if not isinstance(s, dict):
                 continue
-            ok, why = _validate_suggestion(s)
+            ok, why = _validate_suggestion(s, is_house=is_house)
             if not ok:
                 rejected_for_invalid.append({"suggestion": s, "reason": why})
                 continue
@@ -591,6 +716,7 @@ def run_weekly_review(*, model: str | None = None, mode: str | None = None,
                     spec=s["spec"],
                     proposal_id=proposal_id,
                     priority=int(s.get("priority", 3)),
+                    competitor_id=competitor_id,
                 )
             except ValueError as exc:
                 rejected_for_invalid.append(
@@ -610,7 +736,8 @@ def run_weekly_review(*, model: str | None = None, mode: str | None = None,
 
         # ── finalise run trace ────────────────────────────────────────
         run.summary = (
-            f"tasks={len(tasks_created)} accepted={len(proposals_accepted)} "
+            f"[{competitor_id}] tasks={len(tasks_created)} "
+            f"accepted={len(proposals_accepted)} "
             f"rejected={len(proposals_rejected)}"
         )
         run.add_trace(
@@ -623,18 +750,57 @@ def run_weekly_review(*, model: str | None = None, mode: str | None = None,
         )
         insert_audit("agents", "pm_review_done",
                      {"run_id": run.run_id,
+                      "competitor_id": competitor_id,
                       "tasks_created": tasks_created,
                       "proposals_accepted": proposals_accepted,
                       "proposals_rejected": proposals_rejected})
 
         return {
             "run_id": run.run_id,
+            "competitor_id": competitor_id,
             "tasks_created": tasks_created,
             "proposals_accepted": proposals_accepted,
             "proposals_rejected": proposals_rejected,
             "deferred": False,
             "reason": deferred_reason or "",
         }
+
+
+# ─── public entry point ──────────────────────────────────────────────
+
+
+def run_weekly_review(*, model: str | None = None, mode: str | None = None,
+                      force: bool = False,
+                      competitor_id: str | None = None) -> dict | list[dict]:
+    """Run the PM weekly review.
+
+    `competitor_id` selects which agent to review:
+      * a specific id → review just that agent; returns a single summary dict
+        (same shape as before, plus `competitor_id`).
+      * None (cron default) → review the HOUSE agent plus every active
+        freestyle competitor, one independent review each; returns a LIST of
+        per-agent summary dicts.
+
+    Each per-agent review is fully isolated: its own skip rules, inputs, LLM
+    call, and `agent_runs` row. A failure in one agent's LLM call propagates
+    (the cron log surfaces it) — but the per-agent rows already written stand.
+    """
+    model = model or os.environ.get("DECIDER_MODEL", DECIDER_MODEL_DEFAULT)
+    mode = (mode or os.environ.get("LLM_MODE", "cli")).strip().lower()
+
+    if competitor_id is not None:
+        return _review_one_agent(competitor_id, model=model, mode=mode,
+                                 force=force)
+
+    # All-agents pass (cron): house first, then active freestyle competitors.
+    from helm.competition.competitors import freestyle_competitors
+
+    agent_ids = [HOUSE_COMPETITOR_ID] + [c.id for c in freestyle_competitors()]
+    results: list[dict] = []
+    for aid in agent_ids:
+        results.append(_review_one_agent(aid, model=model, mode=mode,
+                                         force=force))
+    return results
 
 
 __all__ = ["run_weekly_review"]

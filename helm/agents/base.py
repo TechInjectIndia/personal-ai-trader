@@ -48,6 +48,7 @@ class RunHandle:
     release_id: int | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    competitor_id: str | None = None
 
     def set(self, **kwargs: Any) -> None:
         for k, v in kwargs.items():
@@ -59,21 +60,28 @@ class RunHandle:
 
 @contextlib.contextmanager
 def record_run(agent: str, invocation: str, *, model: str | None = None,
-               llm_mode: str | None = None) -> Iterator[RunHandle]:
+               llm_mode: str | None = None,
+               competitor_id: str | None = None) -> Iterator[RunHandle]:
     """Wrap an agent invocation. Inserts agent_runs row at entry and updates
     on exit. Exceptions mark outcome='error' but are re-raised so the cron
-    log still shows the traceback."""
+    log still shows the traceback.
+
+    `competitor_id` scopes the run to one agent (NULL = house); defaults to
+    None so existing callers stay unchanged. The handle's `competitor_id` is
+    also writable mid-run via `handle.set(...)`."""
     with conn() as c:
         row = c.execute(
             """
-            INSERT INTO agent_runs (agent, invocation, model, llm_mode, outcome)
-            VALUES (%s, %s, %s, %s, 'in_progress')
+            INSERT INTO agent_runs (agent, invocation, model, llm_mode,
+                                    competitor_id, outcome)
+            VALUES (%s, %s, %s, %s, %s, 'in_progress')
             RETURNING id
             """,
-            (agent, invocation, model, llm_mode),
+            (agent, invocation, model, llm_mode, competitor_id),
         ).fetchone()
     handle = RunHandle(
         run_id=row["id"], agent=agent, started_at=time.time(), trace={},
+        competitor_id=competitor_id,
     )
     try:
         yield handle
@@ -94,6 +102,7 @@ def record_run(agent: str, invocation: str, *, model: str | None = None,
                     latency_ms = %s,
                     outcome = %s,
                     summary = %s,
+                    competitor_id = %s,
                     trace = %s::jsonb
                 WHERE id = %s
                 """,
@@ -101,6 +110,7 @@ def record_run(agent: str, invocation: str, *, model: str | None = None,
                     handle.task_id, handle.release_id,
                     handle.input_tokens, handle.output_tokens,
                     latency_ms, handle.outcome, handle.summary[:500],
+                    handle.competitor_id,
                     json.dumps(handle.trace, default=str),
                     handle.run_id,
                 ),
@@ -113,14 +123,20 @@ VALID_TASK_TYPES = {
     "prompt_tweak", "param_change", "add_filter",
     "setting_override", "add_strategy_variant",
     "bug_fix", "needs_human",
+    # Freestyle-competitor config edits (data, not code — see Engineer/Tester).
+    "persona_edit", "strategy_config_edit",
 }
 
 
 def create_task(*, created_by: str, title: str, rationale: str,
                 task_type: str, spec: dict, proposal_id: int | None = None,
                 parent_task_id: int | None = None,
-                priority: int = 3) -> int:
-    """Insert an agent_tasks row. Returns id."""
+                priority: int = 3, competitor_id: str | None = None) -> int:
+    """Insert an agent_tasks row. Returns id.
+
+    `competitor_id` scopes the task to one agent (NULL = house). Defaults to
+    None so existing callers stay unchanged.
+    """
     if task_type not in VALID_TASK_TYPES:
         raise ValueError(f"invalid task_type {task_type!r}")
     with conn() as c:
@@ -128,18 +144,19 @@ def create_task(*, created_by: str, title: str, rationale: str,
             """
             INSERT INTO agent_tasks (created_by, title, rationale, task_type,
                                      spec, proposal_id, parent_task_id, priority,
-                                     status)
-            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s,
+                                     competitor_id, status)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s,
                     CASE WHEN %s = 'needs_human' THEN 'needs_human' ELSE 'open' END)
             RETURNING id
             """,
             (created_by, title, rationale, task_type,
              json.dumps(spec), proposal_id, parent_task_id, priority,
-             task_type),
+             competitor_id, task_type),
         ).fetchone()
     insert_audit("agents", "task_created",
                  {"task_id": row["id"], "task_type": task_type,
-                  "created_by": created_by, "title": title})
+                  "created_by": created_by, "title": title,
+                  "competitor_id": competitor_id})
     return row["id"]
 
 
@@ -194,6 +211,34 @@ def complete_task(task_id: int, *, status: str, release_id: int | None = None,
         )
     insert_audit("agents", "task_completed",
                  {"task_id": task_id, "status": status, "release_id": release_id})
+
+
+# ─── autonomy kill-switch ─────────────────────────────────────────────
+
+def _truthy(value: Any) -> bool:
+    return str(value).strip().lower() in {"true", "1", "yes", "on"}
+
+
+def is_autonomy_paused(competitor_id: str | None = None) -> bool:
+    """True if the self-improvement loop is paused and agents must no-op.
+
+    Two scopes, either of which pauses:
+      * global  — settings key ``autonomy_paused`` (the documented human
+        kill-switch, also tripped by the Tester after two reverts in a row).
+      * per-agent — settings key ``autonomy_paused:{competitor_id}`` (tripped by
+        the Tester after two freestyle config reverts for that competitor).
+
+    Every agent entrypoint (PM / Engineer / Tester) checks this before doing
+    work, so the switch — and the Tester's circuit-breaker — actually halt the
+    loop. Clear with ``set_setting('autonomy_paused', 'false')`` (or delete the
+    row) to resume.
+    """
+    from helm.data.store import get_setting
+    if _truthy(get_setting("autonomy_paused")):
+        return True
+    if competitor_id and _truthy(get_setting(f"autonomy_paused:{competitor_id}")):
+        return True
+    return False
 
 
 # ─── releases ─────────────────────────────────────────────────────────
@@ -263,6 +308,130 @@ def _append_releases_md(release_id: int, sha: str, summary: str,
         RELEASES_MD.write_text("# Releases\n\nAutonomous improvement log.\n")
     with RELEASES_MD.open("a", encoding="utf-8") as f:
         f.write(block)
+
+
+# ─── competitor config versions (freestyle "release analogue") ─────────
+# Persona / strategy_config edits for freestyle competitors are DATA changes
+# in Postgres, not code commits — so they get their own version table instead
+# of `releases`. Same lifecycle (deployed → verified | reverted | failed), but
+# rollback writes the captured old_value back rather than `git revert`. None
+# of these helpers touch RELEASES.md or git.
+
+def record_config_version(*, competitor_id: str, task_id: int | None,
+                          field: str, mandate_week: Any | None,
+                          old_value: Any, new_value: Any) -> int:
+    """Insert a deployed competitor_config_versions row. Returns id.
+
+    `old_value` / `new_value` are JSON-serialised as-is (a string for persona,
+    an object for strategy_config). `mandate_week` is the target
+    competitor_mandates.week_start for strategy_config edits, else None.
+    """
+    with conn() as c:
+        row = c.execute(
+            """
+            INSERT INTO competitor_config_versions
+                (competitor_id, task_id, field, mandate_week,
+                 old_value, new_value, status)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, 'deployed')
+            RETURNING id
+            """,
+            (competitor_id, task_id, field, mandate_week,
+             json.dumps(old_value), json.dumps(new_value)),
+        ).fetchone()
+    insert_audit("agents", "config_version_deployed",
+                 {"version_id": row["id"], "competitor_id": competitor_id,
+                  "field": field, "task_id": task_id})
+    return row["id"]
+
+
+def mark_config_version_verified(version_id: int, notes: str) -> None:
+    with conn() as c:
+        c.execute(
+            "UPDATE competitor_config_versions SET status='verified', "
+            "verified_ts=now(), tester_notes=%s WHERE id=%s",
+            (notes[:2000], version_id),
+        )
+    insert_audit("agents", "config_version_verified",
+                 {"version_id": version_id, "notes": notes[:200]})
+
+
+def mark_config_version_reverted(version_id: int, notes: str) -> None:
+    with conn() as c:
+        c.execute(
+            "UPDATE competitor_config_versions SET status='reverted', "
+            "reverted_ts=now(), tester_notes=%s WHERE id=%s",
+            (notes[:2000], version_id),
+        )
+    insert_audit("agents", "config_version_reverted",
+                 {"version_id": version_id, "notes": notes[:200]})
+
+
+def mark_config_version_failed(version_id: int, notes: str) -> None:
+    """Used when applying the rollback itself fails — neither verified nor
+    cleanly reverted."""
+    with conn() as c:
+        c.execute(
+            "UPDATE competitor_config_versions SET status='failed', "
+            "tester_notes=%s WHERE id=%s",
+            (notes[:2000], version_id),
+        )
+    insert_audit("agents", "config_version_failed",
+                 {"version_id": version_id, "notes": notes[:200]})
+
+
+def unverified_config_versions(competitor_id: str | None = None) -> list[dict]:
+    """Deployed-but-unverified config versions, oldest first.
+
+    Optional `competitor_id` narrows to one agent (used by the PM ship-gate);
+    default returns every agent's pending versions (used by the Tester loop).
+    """
+    sql = "SELECT * FROM competitor_config_versions WHERE status='deployed'"
+    args: tuple = ()
+    if competitor_id is not None:
+        sql += " AND competitor_id = %s"
+        args = (competitor_id,)
+    sql += " ORDER BY created_ts ASC"
+    with conn() as c:
+        return list(c.execute(sql, args))
+
+
+def apply_config_revert(version_id: int) -> None:
+    """Write a config version's `old_value` back to the live record.
+
+    persona          → UPDATE competitors SET persona = old_value
+    strategy_config  → UPDATE competitor_mandates SET strategy_config = old_value
+                       WHERE competitor_id = … AND week_start = mandate_week
+
+    A NULL `old_value` (first-ever edit) means there's nothing to restore for a
+    strategy_config edit — the row is left as-is; persona is never NULL since a
+    persona always pre-exists. Raises ValueError on an unknown field.
+    """
+    with conn() as c:
+        ver = c.execute(
+            "SELECT competitor_id, field, mandate_week, old_value "
+            "FROM competitor_config_versions WHERE id=%s",
+            (version_id,),
+        ).fetchone()
+        if ver is None:
+            raise ValueError(f"no config version id={version_id}")
+        field = ver["field"]
+        old_value = ver["old_value"]
+        if field == "persona":
+            c.execute(
+                "UPDATE competitors SET persona=%s WHERE id=%s",
+                (old_value, ver["competitor_id"]),
+            )
+        elif field == "strategy_config":
+            if old_value is None:
+                # No prior strategy_config to restore; leave the live row.
+                return
+            c.execute(
+                "UPDATE competitor_mandates SET strategy_config=%s::jsonb "
+                "WHERE competitor_id=%s AND week_start=%s",
+                (json.dumps(old_value), ver["competitor_id"], ver["mandate_week"]),
+            )
+        else:  # pragma: no cover — field is CHECK-constrained
+            raise ValueError(f"unknown config field {field!r}")
 
 
 # ─── git + PM2 helpers ────────────────────────────────────────────────
@@ -358,17 +527,47 @@ class GoalBrief:
 
 
 def build_goal_brief(*, goal_deadline_date: datetime | None = None,
-                     ) -> GoalBrief:
-    """Aggregate the snapshot the PM agent needs to make decisions."""
-    from helm.wallet import wallet_state  # local: avoid circular at module load
-    w = wallet_state()
+                     competitor_id: str | None = None) -> GoalBrief:
+    """Aggregate the snapshot the PM agent needs to make decisions.
+
+    `competitor_id` scopes the brief to one agent's book. None or the house id
+    builds the incumbent house brief (the single-pool wallet + house-filtered
+    trade/decision/signal stats, same as before). A freestyle competitor id
+    scopes the wallet to that competitor's isolated wallet and every
+    trade/decision/signal/proposal/task/version count to that competitor's rows.
+    """
+    from helm.config import HOUSE_COMPETITOR_ID, HOUSE_TRADE_FILTER
+
+    is_house = competitor_id is None or competitor_id == HOUSE_COMPETITOR_ID
+
+    if is_house:
+        from helm.wallet import wallet_state  # local: avoid circular at load
+        w = wallet_state()
+        # House rows are (competitor_id IS NULL OR ='house-claude'). The same
+        # filter applies to signals/decisions; agent-loop tables canonicalise
+        # NULL→house at write time, so house = ='house-claude' there.
+        trade_filter = HOUSE_TRADE_FILTER
+        signal_filter = HOUSE_TRADE_FILTER
+        decision_filter = HOUSE_TRADE_FILTER
+        loop_id = HOUSE_COMPETITOR_ID
+        scope_args: tuple = ()
+    else:
+        assert competitor_id is not None  # narrowed by is_house above
+        from helm.competition.wallet import competitor_wallet_state
+        w = competitor_wallet_state(competitor_id)
+        trade_filter = "competitor_id = %s"
+        signal_filter = "competitor_id = %s"
+        decision_filter = "competitor_id = %s"
+        loop_id = competitor_id
+        scope_args = (competitor_id,)
+
     now_ist = datetime.now(IST)
     seven_days_ago = now_ist - timedelta(days=7)
 
     with conn() as c:
         # Win/loss totals
         ts = c.execute(
-            """
+            f"""
             SELECT
               COUNT(*) AS total,
               COUNT(*) FILTER (WHERE COALESCE(net_pnl_inr, pnl_inr) > 0) AS wins,
@@ -380,34 +579,45 @@ def build_goal_brief(*, goal_deadline_date: datetime | None = None,
               COALESCE(SUM(COALESCE(net_pnl_inr, pnl_inr))
                        FILTER (WHERE exit_ts >= %s), 0) AS pnl_7d,
               COUNT(*) FILTER (WHERE exit_ts >= %s) AS trades_7d
-            FROM paper_trades WHERE status='CLOSED'
-            """,
-            (seven_days_ago, seven_days_ago),
+            FROM paper_trades WHERE status='CLOSED' AND {trade_filter}
+            """,  # noqa: S608 — filters are hardcoded literals, not user input
+            (seven_days_ago, seven_days_ago, *scope_args),
         ).fetchone()
         s7 = c.execute(
-            "SELECT COUNT(*) AS n FROM signals WHERE ts >= %s",
-            (seven_days_ago,),
+            f"SELECT COUNT(*) AS n FROM signals "
+            f"WHERE ts >= %s AND {signal_filter}",  # noqa: S608
+            (seven_days_ago, *scope_args),
         ).fetchone()
         d7 = c.execute(
-            """
+            f"""
             SELECT
               COUNT(*) AS n,
               COUNT(*) FILTER (WHERE verdict='TAKE') AS takes
-            FROM decisions WHERE ts >= %s
-            """,
-            (seven_days_ago,),
+            FROM decisions WHERE ts >= %s AND {decision_filter}
+            """,  # noqa: S608
+            (seven_days_ago, *scope_args),
         ).fetchone()
         op = c.execute(
             "SELECT COUNT(*) AS n FROM improvement_proposals "
-            "WHERE status='open'"
+            "WHERE status='open' AND competitor_id = %s",
+            (loop_id,),
         ).fetchone()
         ot = c.execute(
             "SELECT COUNT(*) AS n FROM agent_tasks "
-            "WHERE status IN ('open','in_progress','needs_human')"
+            "WHERE status IN ('open','in_progress','needs_human') "
+            "AND competitor_id = %s",
+            (loop_id,),
         ).fetchone()
-        ur = c.execute(
-            "SELECT COUNT(*) AS n FROM releases WHERE status='deployed'"
-        ).fetchone()
+        if is_house:
+            ur = c.execute(
+                "SELECT COUNT(*) AS n FROM releases WHERE status='deployed'"
+            ).fetchone()
+        else:
+            ur = c.execute(
+                "SELECT COUNT(*) AS n FROM competitor_config_versions "
+                "WHERE status='deployed' AND competitor_id = %s",
+                (loop_id,),
+            ).fetchone()
 
     total = int(ts["total"])
     wins = int(ts["wins"])

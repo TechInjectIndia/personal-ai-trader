@@ -93,7 +93,8 @@ def _mk_decision(bag: dict, signal_id: int, *, verdict: str = "TAKE") -> int:
     return int(row["id"])
 
 
-def _mk_retro(bag: dict, decision_id: int, *, kind: str = "TRADE") -> int:
+def _mk_retro(bag: dict, decision_id: int, *, kind: str = "TRADE",
+              competitor_id: str = "house-claude") -> int:
     with conn() as c:
         row = c.execute(
             """
@@ -102,14 +103,14 @@ def _mk_retro(bag: dict, decision_id: int, *, kind: str = "TRADE") -> int:
                  verdict_label, signal_quality_score, decision_quality_score,
                  execution_quality_score, tags,
                  summary_layman, why_we_acted, what_happened, verdict_reasoning,
-                 learnings, raw_response)
+                 learnings, raw_response, competitor_id)
             VALUES (%s, NULL, %s, 'test', 'test',
                     'GOOD_CALL', 3, 3, 3, '[]'::jsonb,
                     'summary', 'why', 'what', 'verdict',
-                    '[]'::jsonb, '{}'::jsonb)
+                    '[]'::jsonb, '{}'::jsonb, %s)
             RETURNING id
             """,
-            (kind, decision_id),
+            (kind, decision_id, competitor_id),
         ).fetchone()
     bag["trade_retrospectives"].append(row["id"])
     return int(row["id"])
@@ -117,18 +118,18 @@ def _mk_retro(bag: dict, decision_id: int, *, kind: str = "TRADE") -> int:
 
 def _mk_proposal(bag: dict, retro_id: int, *, title: str = "tighten orb stop",
                  category: str = "decider_prompt", confidence: int = 4,
-                 status: str = "open") -> int:
+                 status: str = "open", competitor_id: str = "house-claude") -> int:
     with conn() as c:
         row = c.execute(
             """
             INSERT INTO improvement_proposals
                 (retro_id, category, title, rationale, proposed_change,
-                 evidence, confidence, status)
+                 evidence, confidence, status, competitor_id)
             VALUES (%s, %s, %s, 'because tests', 'do the thing',
-                    '{}'::jsonb, %s, %s)
+                    '{}'::jsonb, %s, %s, %s)
             RETURNING id
             """,
-            (retro_id, category, title, confidence, status),
+            (retro_id, category, title, confidence, status, competitor_id),
         ).fetchone()
     bag["improvement_proposals"].append(row["id"])
     return int(row["id"])
@@ -227,7 +228,8 @@ def test_creates_tasks_and_flips_statuses(monkeypatch, db_cleanup):
     monkeypatch.setattr("helm.agents.pm.complete_json", fake_complete_json)
 
     from helm.agents.pm import run_weekly_review
-    result = run_weekly_review(model="test-model", mode="cli", force=True)
+    result = run_weekly_review(model="test-model", mode="cli", force=True,
+                               competitor_id="house-claude")
 
     assert captured.get("called") is True
     assert result["deferred"] is False
@@ -287,7 +289,8 @@ def test_defers_when_unverified_release_present(monkeypatch, db_cleanup):
     monkeypatch.setattr("helm.agents.pm.complete_json", fake_complete_json)
 
     from helm.agents.pm import run_weekly_review
-    result = run_weekly_review(model="test-model", mode="cli", force=False)
+    result = run_weekly_review(model="test-model", mode="cli", force=False,
+                               competitor_id="house-claude")
 
     assert called["n"] == 0
     assert result["deferred"] is True
@@ -317,8 +320,10 @@ def test_defers_when_no_new_trades_or_proposals(monkeypatch, db_cleanup):
         prior = c.execute(
             """
             INSERT INTO agent_runs (agent, invocation, model, llm_mode,
+                                    competitor_id,
                                     started_ts, finished_ts, outcome)
             VALUES ('pm', 'weekly_review', 'test', 'cli',
+                    'house-claude',
                     now() + interval '1 minute',
                     now() + interval '1 minute', 'ok')
             RETURNING id
@@ -343,7 +348,8 @@ def test_defers_when_no_new_trades_or_proposals(monkeypatch, db_cleanup):
     monkeypatch.setattr("helm.agents.pm.complete_json", fake_complete_json)
 
     from helm.agents.pm import run_weekly_review
-    result = run_weekly_review(model="test-model", mode="cli", force=False)
+    result = run_weekly_review(model="test-model", mode="cli", force=False,
+                               competitor_id="house-claude")
 
     assert called["n"] == 0
     assert result["deferred"] is True

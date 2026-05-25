@@ -31,13 +31,18 @@ from zoneinfo import ZoneInfo
 
 from helm.agents.base import (
     REPO_ROOT,
+    apply_config_revert,
     create_task,
     git_revert,
+    mark_config_version_failed,
+    mark_config_version_reverted,
+    mark_config_version_verified,
     mark_release_reverted,
     mark_release_verified,
     pm2_reload,
     record_run,
     run_cmd,
+    unverified_config_versions,
     unverified_releases,
 )
 from helm.data.store import conn, insert_audit, set_setting
@@ -46,6 +51,9 @@ IST = ZoneInfo("Asia/Kolkata")
 
 # Postgres advisory lock key — distinct from retro_trades' 8472001.
 TESTER_LOCK_KEY = 8472002
+# Distinct lock for the freestyle config-verification loop so it can run
+# alongside the release-verification loop without contending on the same key.
+TESTER_CONFIG_LOCK_KEY = 8472003
 
 # Stages that must pass. Order matters: a static-gate failure short-circuits
 # before we spend time on the pipeline smoke or hit the dashboard.
@@ -639,11 +647,266 @@ def process_unverified() -> int:
     return processed
 
 
+# ─── Freestyle config-version verification ─────────────────────────────
+# Mirrors the release path but for a competitor's persona / strategy_config
+# edit (a Postgres data change, NOT a git commit). The gauntlet is fully
+# deterministic; rollback writes the captured old_value back instead of
+# `git revert`. No pytest — there's no code to test.
+
+# Stages for a config version. dry_run_cycle is opt-in: a quota-paused backend
+# yields NEUTRAL (skip), never a failure, so we don't bench a competitor over a
+# free-tier rate limit.
+CONFIG_STAGES_ORDER = ("well_formed", "dry_run_cycle")
+
+
+def _config_stage_well_formed(ver: dict) -> tuple[bool, str, str | None]:
+    """Re-read the LIVE value and re-validate it against the shared bounds.
+
+    We re-read rather than trusting ver['new_value'] so a value mangled
+    between deploy and verify (manual edit, partial write) is still caught.
+    """
+    from helm.agents.engineer import validate_persona, validate_strategy_config
+
+    field = ver["field"]
+    with conn() as c:
+        if field == "persona":
+            row = c.execute(
+                "SELECT persona FROM competitors WHERE id = %s",
+                (ver["competitor_id"],),
+            ).fetchone()
+            live = row["persona"] if row else None
+            ok, why = validate_persona(live)
+            excerpt = f"persona len={len(live) if isinstance(live, str) else 'n/a'}"
+        elif field == "strategy_config":
+            row = c.execute(
+                "SELECT strategy_config FROM competitor_mandates "
+                "WHERE competitor_id = %s AND week_start = %s",
+                (ver["competitor_id"], ver["mandate_week"]),
+            ).fetchone()
+            live = row["strategy_config"] if row else None
+            ok, why = validate_strategy_config(live)
+            excerpt = f"strategy_config keys={sorted(live) if isinstance(live, dict) else 'n/a'}"
+        else:  # pragma: no cover — field is CHECK-constrained
+            return False, f"unknown field {field!r}", f"unknown field {field!r}"
+    if not ok:
+        return False, excerpt, why
+    return True, excerpt, None
+
+
+def _config_stage_dry_run(ver: dict) -> tuple[bool, str, str | None]:
+    """Run one dry-run decision cycle for the competitor (books nothing).
+
+    A quota-paused backend is NEUTRAL — we return ok with a 'skipped (quota)'
+    note so a free-tier rate limit can never fail verification. A real cycle
+    error (parse/transport) IS a failure.
+    """
+    from helm.competition.competitors import get_competitor
+    from helm.competition.runner import run_competitor_cycle
+
+    competitor = get_competitor(ver["competitor_id"])
+    if competitor is None:
+        return False, f"no competitor {ver['competitor_id']!r}", "competitor missing"
+    res = run_competitor_cycle(competitor, dry_run=True)
+    if res.paused:
+        # NEUTRAL: backend quota-benched, no signal either way.
+        return True, f"skipped (quota): {res.message}", None
+    excerpt = (f"ok={res.ok} errors={res.errors} blocked={res.blocked} "
+               f"held={res.held}")
+    if not res.ok or res.errors:
+        return False, excerpt, f"dry-run cycle failed: {res.message}"[:300]
+    return True, excerpt, None
+
+
+def verify_config_version(version_id: int) -> dict:
+    """Run the deterministic gauntlet for one config version.
+
+    Same result shape as verify_release. Does NOT move the version's status —
+    that's process_unverified_config()'s job, so this stays a pure function.
+    """
+    with conn() as c:
+        ver = c.execute(
+            "SELECT * FROM competitor_config_versions WHERE id = %s",
+            (version_id,),
+        ).fetchone()
+    if ver is None:
+        return {"passed": False, "stages": {},
+                "failure_reason": f"no config version id={version_id}"}
+
+    stages: dict[str, dict] = {}
+    failure_reason: str | None = None
+    passed = True
+    for stage_name in CONFIG_STAGES_ORDER:
+        if not passed:
+            stages[stage_name] = {
+                "ok": False, "duration_ms": 0,
+                "output_excerpt": "(skipped — earlier stage failed)",
+                "failure_reason": "skipped",
+            }
+            continue
+        if stage_name == "well_formed":
+            r = _run_stage(stage_name, lambda v=ver: _config_stage_well_formed(v))
+        elif stage_name == "dry_run_cycle":
+            r = _run_stage(stage_name, lambda v=ver: _config_stage_dry_run(v))
+        else:  # unreachable — CONFIG_STAGES_ORDER is closed
+            continue
+        stages[stage_name] = r.to_dict()
+        if not r.ok:
+            passed = False
+            failure_reason = r.failure_reason or f"stage {stage_name} failed"
+
+    return {"passed": passed, "stages": stages, "failure_reason": failure_reason}
+
+
+def _summarise_config_notes(ver: dict, result: dict) -> str:
+    """Deterministic one-liner for a config version's tester_notes.
+
+    No LLM call — config edits are cheap and frequent; a factual summary is
+    plenty for the dashboard.
+    """
+    pieces = []
+    for name in CONFIG_STAGES_ORDER:
+        s = result["stages"].get(name)
+        if not s:
+            continue
+        pieces.append(f"{name}={'ok' if s['ok'] else 'FAIL'} ({s['duration_ms']}ms)")
+    line = "; ".join(pieces)
+    verb = "verified" if result["passed"] else "reverted"
+    note = (f"config version {ver['id']} ({ver['field']}, {ver['competitor_id']}) "
+            f"{verb}: {line}")
+    if result["failure_reason"]:
+        note += f". failure: {result['failure_reason']}"
+    return note[:2000]
+
+
+def _previous_config_version_reverted(ver: dict) -> bool:
+    """True if this competitor's most recent config version BEFORE `ver` was
+    reverted — drives the per-competitor two-reverts-in-a-row pause."""
+    with conn() as c:
+        row = c.execute(
+            """
+            SELECT status FROM competitor_config_versions
+            WHERE competitor_id = %s AND id < %s
+            ORDER BY id DESC LIMIT 1
+            """,
+            (ver["competitor_id"], ver["id"]),
+        ).fetchone()
+    return bool(row and row["status"] == "reverted")
+
+
+def process_unverified_config() -> int:
+    """Iterate every deployed-but-unverified config version, oldest first.
+
+    Returns the count processed (moved out of 'deployed'). Wrapped in its own
+    advisory lock (distinct from the release loop) so overlapping cron firings
+    can't double-up. On pass → verified. On fail → roll the old_value back,
+    mark reverted, file a needs_human task tagged with the competitor. Two
+    reverts in a row for the SAME competitor pauses that competitor's loop.
+    """
+    processed = 0
+    with conn() as lock_conn:
+        got = lock_conn.execute(
+            "SELECT pg_try_advisory_lock(%s) AS ok", (TESTER_CONFIG_LOCK_KEY,),
+        ).fetchone()["ok"]
+        if not got:
+            insert_audit("tester", "config_skipped_locked",
+                         {"reason": "advisory_lock_held"})
+            return 0
+        try:
+            for ver in unverified_config_versions():
+                with record_run("tester", "verify_config",
+                                competitor_id=ver["competitor_id"]) as run:
+                    run.add_trace(config_version_id=ver["id"],
+                                  competitor_id=ver["competitor_id"],
+                                  field=ver["field"])
+                    result = verify_config_version(ver["id"])
+                    run.add_trace(stages=result["stages"], passed=result["passed"],
+                                  failure_reason=result["failure_reason"])
+                    notes = _summarise_config_notes(ver, result)
+
+                    if result["passed"]:
+                        mark_config_version_verified(ver["id"], notes=notes)
+                        run.set(outcome="ok",
+                                summary=f"config version {ver['id']} verified")
+                        processed += 1
+                        continue
+
+                    # ── Failure path: roll back to old_value ──
+                    try:
+                        apply_config_revert(ver["id"])
+                    except Exception as exc:  # noqa: BLE001 — revert failed
+                        err = f"config revert failed: {exc!r}"[:1500]
+                        mark_config_version_failed(ver["id"], notes=err)
+                        create_task(
+                            created_by="tester",
+                            task_type="needs_human",
+                            priority=5,
+                            parent_task_id=ver["task_id"],
+                            competitor_id=ver["competitor_id"],
+                            title=f"config revert failed for version {ver['id']}",
+                            rationale=err[:500],
+                            spec={"config_version_id": ver["id"],
+                                  "competitor_id": ver["competitor_id"],
+                                  "field": ver["field"],
+                                  "failure_reason": result["failure_reason"],
+                                  "error": err},
+                        )
+                        run.set(outcome="error",
+                                summary=f"config version {ver['id']} revert FAILED")
+                        processed += 1
+                        return processed
+
+                    mark_config_version_reverted(ver["id"], notes=notes)
+                    bug_task_id = create_task(
+                        created_by="tester",
+                        task_type="needs_human",
+                        priority=5,
+                        parent_task_id=ver["task_id"],
+                        competitor_id=ver["competitor_id"],
+                        title=f"reverted config version {ver['id']} "
+                              f"({ver['field']}, {ver['competitor_id']})",
+                        rationale=(result["failure_reason"]
+                                   or "tester reverted config version")[:500],
+                        spec={"config_version_id": ver["id"],
+                              "competitor_id": ver["competitor_id"],
+                              "field": ver["field"],
+                              "failure_reason": result["failure_reason"]},
+                    )
+                    run.set(outcome="error",
+                            summary=(f"config version {ver['id']} reverted "
+                                     f"(needs_human task {bug_task_id})"))
+                    run.add_trace(needs_human_task_id=bug_task_id)
+                    processed += 1
+
+                    # Two reverts in a row for THIS competitor → pause its loop.
+                    if _previous_config_version_reverted(ver):
+                        pause_key = f"autonomy_paused:{ver['competitor_id']}"
+                        set_setting(pause_key, "true", actor="tester")
+                        insert_audit(
+                            "tester", "competitor_autonomy_paused",
+                            {"trigger": "two_config_reverts_in_a_row",
+                             "competitor_id": ver["competitor_id"],
+                             "config_version_id": ver["id"]},
+                        )
+                        return processed
+        finally:
+            try:
+                lock_conn.execute(
+                    "SELECT pg_advisory_unlock(%s)", (TESTER_CONFIG_LOCK_KEY,),
+                )
+            except Exception:  # noqa: BLE001 — best-effort
+                pass
+    return processed
+
+
 __all__ = [
     "REPO_ROOT",
     "SAMPLE_CANDLES",
     "STAGES_ORDER",
+    "CONFIG_STAGES_ORDER",
     "TESTER_LOCK_KEY",
+    "TESTER_CONFIG_LOCK_KEY",
     "process_unverified",
+    "process_unverified_config",
     "verify_release",
+    "verify_config_version",
 ]

@@ -1,9 +1,10 @@
 """
 Seed the freestyle competition cohort (idempotent).
 
-Registers the four freestyle league agents — gemini, qwen, codex, opencode —
-alongside the already-seeded incumbent 'house-claude' (see
-scripts/migrate_competition.py). Each freestyle agent gets:
+Registers the four freestyle league agents — gemini, qwen (qwen3-next via
+OpenRouter), nemotron (via OpenRouter), opencode — alongside the already-seeded
+incumbent 'house-claude' (see scripts/migrate_competition.py). Each freestyle
+agent gets:
   * a `competitors` row (autonomy_level='freestyle'), with a distinct persona, and
   * an isolated `competitor_wallets` row seeded from WalletConfig.initial_capital_inr
     (₹50,000) — only on first insert, so a live wallet's P&L is never reset.
@@ -39,13 +40,15 @@ COHORT: list[tuple[str, str, str, str, str]] = [
         "breakout level; lets winners run toward an extended target.",
     ),
     (
-        "qwen-meanrev", "Qwen (Mean-Reversion)", "qwen", "qwen-coder",
+        "qwen-meanrev", "Qwen3 (Mean-Reversion)", "qwen",
+        "qwen/qwen3-next-80b-a3b-instruct:free",
         "Mean-reversion / VWAP-reclaim trader: fades over-extended dips and "
         "buys reclaims of intraday support; modest targets, quick to cut; "
         "prefers liquid large caps over thin movers.",
     ),
     (
-        "codex-trend", "Codex (Trend)", "codex", "gpt-5-codex",
+        "nemotron-trend", "Nemotron (Trend)", "nemotron",
+        "nvidia/nemotron-3-super-120b-a12b:free",
         "Disciplined trend-follower: takes fewer, higher-conviction longs "
         "aligned with the prevailing intraday trend; wide-ish stops, patient "
         "targets; sits out chop and holds cash when there is no clean trend.",
