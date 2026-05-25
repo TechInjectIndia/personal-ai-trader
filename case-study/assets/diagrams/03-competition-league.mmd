@@ -1,0 +1,26 @@
+flowchart LR
+  subgraph AG["6 CLI backends · one persona each"]
+    direction TB
+    A1["Claude — house incumbent"]
+    A2["Gemini — momentum"]
+    A3["Qwen3 — mean-reversion"]
+    A4["Nemotron — trend"]
+    A5["opencode — range/ETF"]
+    A6["Kiro — ORB · queued"]
+  end
+  AG -->|every 5 min| SNAP["market snapshot<br/>universe + book + wallet"]
+  SNAP --> Q{"quota gate<br/>per backend"}
+  Q --> BC{{"backend call<br/>OPEN / CLOSE / HOLD<br/>logged → agent_invocations"}}
+  BC --> RG{"risk gate<br/>per-competitor"}
+  RG --> EX["paper_execute<br/>chokepoint"]
+  EX -->|isolated debit / credit| W[("6 isolated wallets<br/>₹50k each")]
+  W --> LB["leaderboard +<br/>how it thinks"]
+  BC -.->|reasoning| LB
+  classDef llm fill:#ede9fe,stroke:#7c3aed,color:#4c1d95;
+  classDef gate fill:#fef3c7,stroke:#d97706,color:#7c2d12;
+  classDef db fill:#e0f2fe,stroke:#0ea5e9,color:#075985;
+  classDef act fill:#dcfce7,stroke:#16a34a,color:#14532d;
+  class BC llm
+  class Q,RG gate
+  class W db
+  class EX act

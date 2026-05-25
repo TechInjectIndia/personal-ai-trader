@@ -1,0 +1,15 @@
+flowchart LR
+  RUN["Running trading loop<br/>(Layer 1, live)"] -->|graded outcomes| RT["retros + proposals<br/>plain-English grade"]
+  RT -->|ranked recurrence × confidence| PM{{"PM agent · LLM<br/>triage → typed task"}}
+  PM -->|task + spec| EN{{"Engineer agent · LLM<br/>6 typed mutators · commit"}}
+  EN -->|commit on main| TS["Tester agent<br/>verify on live · revert on fail"]
+  TS -->|verified| HU["Human gate<br/>review and push"]
+  HU -->|pushed → live| RUN
+  classDef llm fill:#ede9fe,stroke:#7c3aed,color:#4c1d95;
+  classDef test fill:#ecfeff,stroke:#0891b2,color:#155e75;
+  classDef human fill:#fff7ed,stroke:#ea580c,color:#7c2d12;
+  classDef act fill:#dcfce7,stroke:#16a34a,color:#14532d;
+  class PM,EN llm
+  class TS test
+  class HU human
+  class RUN act

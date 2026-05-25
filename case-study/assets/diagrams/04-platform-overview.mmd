@@ -1,0 +1,20 @@
+flowchart TB
+  DASH["Streamlit dashboard · 10 pages · read-only"]
+  DB[("PostgreSQL · 20 tables · audited")]
+  L1["LAYER 1 · LLM-gated trading loop<br/>poll → strategies → Claude decides → risk gate → trade → Claude grades<br/>LIVE"]
+  L2["LAYER 2 · Per-agent self-improvement<br/>retros → proposals → PM → Engineer → Tester → human push<br/>BUILT"]
+  L3["LAYER 3 · Competition league<br/>6 AI backends · isolated ₹50k wallets · one risk gate · leaderboard<br/>BUILT"]
+  DASH --> DB
+  L1 <--> DB
+  L2 <--> DB
+  L3 <--> DB
+  classDef db fill:#e0f2fe,stroke:#0ea5e9,color:#075985;
+  classDef l1 fill:#dcfce7,stroke:#16a34a,color:#14532d;
+  classDef l2 fill:#ede9fe,stroke:#7c3aed,color:#4c1d95;
+  classDef l3 fill:#e0f2fe,stroke:#0284c7,color:#075985;
+  classDef dash fill:#f1f5f9,stroke:#64748b,color:#0f172a;
+  class DB db
+  class L1 l1
+  class L2 l2
+  class L3 l3
+  class DASH dash

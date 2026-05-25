@@ -1,0 +1,19 @@
+flowchart LR
+  C(["cron · every minute"]) --> P["poll market<br/>yfinance LTP"]
+  P -->|tick| DB[("Postgres<br/>candles_1m")]
+  DB -->|1-min OHLC| S["strategy scan<br/>ORB · VWAP · gap-fade"]
+  S -->|signal| D{{"Claude · DECIDE<br/>TAKE / SKIP + reason"}}
+  D -->|TAKE| G{"RISK GATE<br/>hard limits"}
+  G -->|pass| T["paper trade<br/>cap ₹15k → ₹25k"]
+  T --> M["manage<br/>stop / target / 15:15"]
+  M -->|closed trade| R{{"Claude · RETRO<br/>plain-English grade"}}
+  R --> PR["improvement_proposals"]
+  PR -.->|feeds| L2[["Layer 2"]]
+  classDef llm fill:#ede9fe,stroke:#7c3aed,color:#4c1d95;
+  classDef gate fill:#fef3c7,stroke:#d97706,color:#7c2d12;
+  classDef db fill:#e0f2fe,stroke:#0ea5e9,color:#075985;
+  classDef act fill:#dcfce7,stroke:#16a34a,color:#14532d;
+  class D,R llm
+  class G gate
+  class DB db
+  class T act

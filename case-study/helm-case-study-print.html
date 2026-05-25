@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Helm — Autonomous AI Agents in Production (Case Study)</title>
+<style>
+  :root{
+    --ink:#0f172a; --ink2:#334155; --muted:#64748b; --line:#e2e8f0;
+    --bg:#ffffff; --panel:#f8fafc; --accent:#4f46e5; --accent2:#0ea5e9;
+    --green:#16a34a; --violet:#7c3aed; --amber:#d97706;
+    --navy:#0b1220;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    font-size:10.3pt;line-height:1.5;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  .page{max-width:186mm;margin:0 auto;padding:0 2mm;}
+  h1,h2,h3{line-height:1.18;color:var(--ink);margin:0 0 .35em;font-weight:700;letter-spacing:-.01em;}
+  h1{font-size:23pt;}
+  h2{font-size:14.5pt;margin-top:1.1em;padding-bottom:.25em;border-bottom:2px solid var(--line);}
+  h3{font-size:11.5pt;margin-top:.9em;color:var(--accent);}
+  p{margin:.45em 0;}
+  a{color:var(--accent);text-decoration:none;}
+  ul{margin:.4em 0 .6em;padding-left:1.1em;}
+  li{margin:.22em 0;}
+  strong{color:var(--ink);}
+  .muted{color:var(--muted);}
+  .small{font-size:8.8pt;}
+
+  /* ---- cover ---- */
+  .cover{padding:6mm 0 3mm;border-bottom:3px solid var(--ink);margin-bottom:5mm;}
+  .brandrow{display:flex;align-items:center;gap:9px;margin-bottom:9mm;}
+  .logo{width:26px;height:26px;border-radius:7px;
+    background:linear-gradient(135deg,var(--accent),var(--accent2));}
+  .brand{font-weight:800;font-size:13pt;letter-spacing:-.02em;}
+  .kicker{font-size:8.3pt;letter-spacing:.22em;text-transform:uppercase;color:var(--muted);
+    font-weight:700;margin-left:6px;}
+  .cover h1{max-width:165mm;}
+  .lede{font-size:11.2pt;color:var(--ink2);max-width:172mm;margin-top:.5em;}
+  .lede b{color:var(--ink);}
+  .metarow{display:flex;flex-wrap:wrap;gap:6px 8px;margin-top:7mm;}
+  .tag{font-size:8.1pt;font-weight:600;color:var(--ink2);background:var(--panel);
+    border:1px solid var(--line);border-radius:999px;padding:3px 10px;}
+
+  /* ---- at a glance grid ---- */
+  .glance{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin:5mm 0 2mm;}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 11px;}
+  .card .lab{font-size:7.6pt;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:700;}
+  .card .val{font-size:9.6pt;color:var(--ink);margin-top:3px;font-weight:600;line-height:1.35;}
+
+  /* ---- figures ---- */
+  figure{margin:5mm 0;page-break-inside:avoid;}
+  .shot{width:100%;border:1px solid #1e293b;border-radius:10px;display:block;
+    background:var(--navy);box-shadow:0 1px 0 rgba(2,6,23,.04);}
+  .diagram{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 8px;text-align:center;}
+  .mermaid{font-size:9pt;}
+  figcaption{font-size:8.4pt;color:var(--muted);margin-top:5px;text-align:center;font-style:italic;}
+
+  /* layer chips */
+  .layer{display:inline-flex;align-items:center;gap:7px;margin-top:.7em;}
+  .pill{font-size:7.8pt;font-weight:800;letter-spacing:.08em;text-transform:uppercase;
+    color:#fff;border-radius:6px;padding:3px 8px;}
+  .p1{background:var(--green);} .p2{background:var(--violet);} .p3{background:var(--accent2);}
+  .status{font-size:7.8pt;font-weight:700;color:var(--muted);border:1px solid var(--line);
+    border-radius:6px;padding:2px 7px;}
+
+  .reuse{background:#eef2ff;border:1px solid #c7d2fe;border-left:4px solid var(--accent);
+    border-radius:8px;padding:10px 13px;margin:4mm 0;font-size:10.2pt;color:var(--ink2);}
+  .reuse b{color:var(--ink);}
+
+  table.stack{width:100%;border-collapse:collapse;margin-top:.4em;}
+  table.stack td{border-top:1px solid var(--line);padding:5px 4px;vertical-align:top;font-size:9.3pt;}
+  table.stack td:first-child{font-weight:700;color:var(--muted);width:34%;
+    text-transform:uppercase;letter-spacing:.06em;font-size:8pt;padding-top:7px;}
+
+  footer{margin-top:7mm;padding-top:4mm;border-top:2px solid var(--line);
+    font-size:8.4pt;color:var(--muted);}
+  footer b{color:var(--ink2);}
+
+  .break{page-break-before:always;}
+  h2,h3{page-break-after:avoid;}
+  @page{size:A4;margin:13mm 11mm 12mm;}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ===================== COVER ===================== -->
+  <div class="cover">
+    <div class="brandrow">
+      <div class="logo"></div>
+      <span class="brand">Helm</span>
+      <span class="kicker">Autonomous AI · Case Study</span>
+    </div>
+    <h1>AI Agents That Decide, Grade, and Ship Their Own Code</h1>
+    <p class="lede">A production AI system where large language models don't just answer questions — they
+      <b>make operational decisions, grade their own outcomes in plain English, and ship their own
+      code fixes</b> through a hard human-reviewed gate. Three cooperating agent layers on one audited
+      Postgres backend, running unattended on a single server. Built end-to-end at TechInject.</p>
+    <div class="metarow">
+      <span class="tag">Claude (Anthropic)</span>
+      <span class="tag">6 competing AI backends</span>
+      <span class="tag">Python · PostgreSQL · Streamlit</span>
+      <span class="tag">Cron · PM2 · nginx</span>
+      <span class="tag">~16,700 lines · 20-table schema</span>
+    </div>
+  </div>
+
+  <!-- ===================== AT A GLANCE ===================== -->
+  <div class="glance">
+    <div class="card"><div class="lab">What it is</div>
+      <div class="val">An LLM-gated, self-improving, multi-agent automation platform — proven on intraday paper trading</div></div>
+    <div class="card"><div class="lab">AI inside operations</div>
+      <div class="val">Claude calls every action, grades every outcome, and — as three agents — ships &amp; verifies its own code</div></div>
+    <div class="card"><div class="lab">Scale</div>
+      <div class="val">~16,700 lines of Python · 20-table PostgreSQL · 10-page dashboard · 6 competing AI backends</div></div>
+    <div class="card"><div class="lab">Runtime</div>
+      <div class="val">Cron-driven on one Linux VPS behind PM2 + nginx + Let's Encrypt — no queue, no Redis, no async layer</div></div>
+    <div class="card"><div class="lab">Cost discipline</div>
+      <div class="val">POC runs at near-zero marginal LLM cost behind a one-env-var swap to paid production transport</div></div>
+    <div class="card"><div class="lab">Stack</div>
+      <div class="val">Claude · Python 3.11 · PostgreSQL · Streamlit · cron · PM2 · nginx</div></div>
+  </div>
+
+  <!-- ===================== PROBLEM ===================== -->
+  <h2>The problem: automation without judgment is blind</h2>
+  <p>Most "automation" is a set of rules. A rule fires, the system acts, and nobody asks whether the
+    action made sense until it has already cost something. That breaks down in three ways every
+    operations team recognizes:</p>
+  <ul>
+    <li><b>No judgment at the point of action.</b> A rule can't weigh context a human would — "this is
+      a bad setup," "this lead is obviously junk," "this ticket is a duplicate." It just fires.</li>
+    <li><b>No accountable explanation afterward.</b> Once a decision is logged, there's no easy way to
+      audit <i>why</i> it was made — especially for a non-technical operator reading the day's activity.</li>
+    <li><b>No path from lesson to fix.</b> Even when a mistake is spotted, turning it into a shipped
+      improvement is manual, slow, and rarely happens.</li>
+  </ul>
+  <p>We kept the fast, deterministic, cheap rule layer <b>and</b> wrapped real intelligence around it:
+    an AI judge in front of every action, an AI grader behind every outcome, and an AI engineering team
+    that closes the loop from lesson to deployed change.</p>
+
+  <!-- ===================== SOLUTION ===================== -->
+  <h2>The solution: three AI agent layers on one backend</h2>
+  <p>Helm is built in three layers that share a single PostgreSQL database, driven by cron jobs that
+    no-op silently outside working hours — no fragile always-on workers.</p>
+
+  <figure>
+    <div class="diagram">
+      <pre class="mermaid">
+flowchart TB
+  DASH["Streamlit dashboard · 10 pages · read-only"]
+  DB[("PostgreSQL · 20 tables · audited")]
+  L1["LAYER 1 · LLM-gated trading loop<br/>poll → strategies → Claude decides → risk gate → trade → Claude grades"]
+  L2["LAYER 2 · Per-agent self-improvement<br/>retros → proposals → PM → Engineer → Tester → human push"]
+  L3["LAYER 3 · Competition league<br/>6 AI backends · isolated ₹50k wallets · one risk gate · leaderboard"]
+  DASH --> DB
+  L1 <--> DB
+  L2 <--> DB
+  L3 <--> DB
+  classDef db fill:#e0f2fe,stroke:#0ea5e9,color:#075985;
+  classDef l1 fill:#dcfce7,stroke:#16a34a,color:#14532d;
+  classDef l2 fill:#ede9fe,stroke:#7c3aed,color:#4c1d95;
+  classDef l3 fill:#e0f2fe,stroke:#0284c7,color:#075985;
+  classDef dash fill:#f1f5f9,stroke:#64748b,color:#0f172a;
+  class DB db
+  class L1 l1
+  class L2 l2
+  class L3 l3
+  class DASH dash
+      </pre>
+    </div>
+    <figcaption>Three AI agent layers sharing one audited Postgres backend, surfaced through one read-only dashboard.</figcaption>
+  </figure>
+
+  <figure>
+    <img class="shot" src="assets/screenshot-hero.png" alt="Competition League dashboard page">
+    <figcaption>Live dashboard — the Competition League: six AI agents, each with a persona, status, equity, and its own PM/Dev/Tester team.</figcaption>
+  </figure>
+
+  <!-- ---- Layer 1 ---- -->
+  <div class="layer"><span class="pill p1">Layer 1</span> <span class="status">LIVE</span></div>
+  <h3>LLM as the decision gate</h3>
+  <p>Mechanical strategies propose candidate actions. Before anything happens, <b>Claude reads the full
+    context and rules TAKE or SKIP with one-line reasoning.</b> Every decision — including every SKIP and
+    every risk-gate rejection — is written as its own database row, so nothing is unaccountable. On a
+    TAKE, a <i>hard-coded</i> risk validator has the final word; the LLM can suggest, never override the
+    guardrails. After the fact, <b>a second Claude call grades the outcome in plain English</b> — a
+    five-way verdict (good call / bad call / lucky / unlucky / mixed), concrete learnings, and quality
+    scores a non-expert can read.</p>
+
+  <figure>
+    <div class="diagram">
+      <pre class="mermaid">
+flowchart LR
+  C(["cron · every minute"]) --> P["poll market<br/>yfinance LTP"]
+  P -->|tick| DB[("Postgres<br/>candles_1m")]
+  DB -->|1-min OHLC| S["strategy scan<br/>ORB · VWAP · gap-fade"]
+  S -->|signal| D{{"Claude · DECIDE<br/>TAKE / SKIP + reason"}}
+  D -->|TAKE| G{"RISK GATE<br/>hard limits"}
+  G -->|pass| T["paper trade<br/>cap ₹15k → ₹25k"]
+  T --> M["manage<br/>stop / target / 15:15"]
+  M -->|closed trade| R{{"Claude · RETRO<br/>plain-English grade"}}
+  R --> PR["improvement_proposals"]
+  classDef llm fill:#ede9fe,stroke:#7c3aed,color:#4c1d95;
+  classDef gate fill:#fef3c7,stroke:#d97706,color:#7c2d12;
+  classDef db fill:#e0f2fe,stroke:#0ea5e9,color:#075985;
+  classDef act fill:#dcfce7,stroke:#16a34a,color:#14532d;
+  class D,R llm
+  class G gate
+  class DB db
+  class T act
+      </pre>
+    </div>
+    <figcaption>Layer 1 — signal → Claude decides → hard risk gate → trade → Claude grades. The model proposes; pure code disposes.</figcaption>
+  </figure>
+
+  <figure>
+    <img class="shot" src="assets/screenshot-retro-expanded.png" alt="An expanded plain-English retrospective">
+    <figcaption>Sample AI output — a closed-call retrospective: plain-English summary, why we acted, what happened, verdict reasoning, and learnings, auto-written by Claude. Here a SKIP is graded a "bad call."</figcaption>
+  </figure>
+
+  <!-- ---- Layer 2 ---- -->
+  <div class="layer"><span class="pill p2">Layer 2</span> <span class="status">BUILT</span></div>
+  <h3>Agents that improve the system itself</h3>
+  <p>Graded mistakes don't sit in a report nobody reads. They become a ranked queue of improvement ideas
+    that <b>three cooperating AI agents</b> turn into shipped change — and the loop runs <b>per competitor</b>,
+    so every agent in the league has its own PM, Engineer, and Tester working only on its backlog:</p>
+  <ul>
+    <li>A <b>Product Manager agent</b> triages the queue against live metrics into well-scoped typed tasks
+      — recurrence beats novelty, cheapest reversible fix first — and runs a <b>semantic consolidation pass</b>
+      that collapses hundreds of near-duplicate proposals into a deduped backlog.</li>
+    <li>An <b>Engineer agent</b> executes one task at a time. For the house agent: a <i>closed set of typed
+      code mutators</i> (never free-form coding), lint and tests as a hard gate, then a commit to <code>main</code>.
+      For a freestyle competitor: tuning that agent's own persona and config. Anything outside the safe
+      surface is flagged for a human.</li>
+    <li>A <b>Tester agent</b> verifies every change on the live deployment through a six-stage check and
+      <b>reverts automatically</b> if anything regresses, keeping <code>main</code> always green.</li>
+  </ul>
+  <p>The human is the <b>only push gate</b> — the Engineer commits locally, a person reviews and pushes.
+    Two reverts in a row auto-pause the whole loop. This is the differentiator most "AI agent" demos never
+    reach: agents that operate safely against a real, running system.</p>
+
+  <figure>
+    <div class="diagram">
+      <pre class="mermaid">
+flowchart LR
+  RUN["Running trading loop<br/>(Layer 1, live)"] -->|graded outcomes| RT["retros + proposals<br/>plain-English grade"]
+  RT -->|ranked recurrence × confidence| PM{{"PM agent · LLM<br/>triage → typed task"}}
+  PM -->|task + spec| EN{{"Engineer agent · LLM<br/>typed mutators · commit"}}
+  EN -->|commit on main| TS["Tester agent<br/>verify on live · revert on fail"]
+  TS -->|verified| HU["Human gate<br/>review and push"]
+  HU -->|pushed → live| RUN
+  classDef llm fill:#ede9fe,stroke:#7c3aed,color:#4c1d95;
+  classDef test fill:#ecfeff,stroke:#0891b2,color:#155e75;
+  classDef human fill:#fff7ed,stroke:#ea580c,color:#7c2d12;
+  classDef act fill:#dcfce7,stroke:#16a34a,color:#14532d;
+  class PM,EN llm
+  class TS test
+  class HU human
+  class RUN act
+      </pre>
+    </div>
+    <figcaption>Layer 2 — the always-green PM → Engineer → Tester loop, run independently for every agent, with a human as the only push gate.</figcaption>
+  </figure>
+
+  <figure>
+    <img class="shot" src="assets/screenshot-self-improvement.png" alt="Self-Improvement Loop dashboard page">
+    <figcaption>Self-Improvement Loop page — a per-agent selector, goal-progress chart (equity vs goal), and the open proposal / task / release queues.</figcaption>
+  </figure>
+
+  <!-- ---- Layer 3 ---- -->
+  <div class="layer"><span class="pill p3">Layer 3</span> <span class="status">BUILT</span></div>
+  <h3>A multi-agent competition league</h3>
+  <p>To compare AI models on the <i>same</i> job, Helm runs six AI backends — <b>Claude (the house
+    incumbent), Gemini, Qwen3, Nemotron, opencode, and Kiro</b> — each trading an isolated ₹50,000 paper
+    wallet, each racing to <b>double it</b>. Every freestyle agent gets a distinct trading persona —
+    Momentum, Mean-Reversion, Trend, Range/ETF, Opening-Range Breakout — so the league tests judgment
+    styles, not just model names. They all flow through the <i>same</i> shared, quota-controlled,
+    risk-gated execution path, so the only variable is the model's own judgment. A leaderboard ranks them
+    on a common basis, a "how it thinks" view shows each agent's raw prompt and reasoning, and each
+    competitor renders as a card with its avatar, live status, equity, and its own PM/Dev/Tester team.
+    This is multi-agent orchestration with real isolation, per-backend rate-limit handling, and
+    auto-resume — not six chatbots in a trench coat.</p>
+
+  <figure>
+    <div class="diagram">
+      <pre class="mermaid">
+flowchart LR
+  subgraph AG["6 CLI backends · one persona each"]
+    direction TB
+    A1["Claude — house incumbent"]
+    A2["Gemini — momentum"]
+    A3["Qwen3 — mean-reversion"]
+    A4["Nemotron — trend"]
+    A5["opencode — range/ETF"]
+    A6["Kiro — ORB · queued"]
+  end
+  AG -->|every 5 min| SNAP["market snapshot<br/>universe + book + wallet"]
+  SNAP --> Q{"quota gate<br/>per backend"}
+  Q --> BC{{"backend call<br/>OPEN / CLOSE / HOLD<br/>logged → agent_invocations"}}
+  BC --> RG{"risk gate<br/>per-competitor"}
+  RG --> EX["paper_execute<br/>chokepoint"]
+  EX -->|isolated debit / credit| W[("6 isolated wallets<br/>₹50k each")]
+  W --> LB["leaderboard +<br/>how it thinks"]
+  BC -.->|reasoning| LB
+  classDef llm fill:#ede9fe,stroke:#7c3aed,color:#4c1d95;
+  classDef gate fill:#fef3c7,stroke:#d97706,color:#7c2d12;
+  classDef db fill:#e0f2fe,stroke:#0ea5e9,color:#075985;
+  classDef act fill:#dcfce7,stroke:#16a34a,color:#14532d;
+  class BC llm
+  class Q,RG gate
+  class W db
+  class EX act
+      </pre>
+    </div>
+    <figcaption>Layer 3 — six AI backends, one shared risk-gated path, isolated wallets, a common leaderboard.</figcaption>
+  </figure>
+
+  <figure>
+    <img class="shot" src="assets/screenshot-retros.png" alt="Retrospectives page verdict distribution">
+    <figcaption>Retrospectives page — the five-way verdict distribution across every reviewed call, filterable per agent. SKIPs are graded against a counterfactual replay, so "bad call" and "unlucky" are real judgments, not the P&amp;L sign.</figcaption>
+  </figure>
+
+  <!-- ===================== ENGINEERING ===================== -->
+  <h2>The engineering decisions that make it production-grade</h2>
+  <p>Anyone can wire an LLM to an API. The reason this runs unattended without babysitting is the boring
+    infrastructure around it:</p>
+  <ul>
+    <li><b>Idempotency and dedup everywhere.</b> A <code>consumed</code> flag flips inside the same
+      transaction as the decision row, so the AI can never act twice on the same item; retrospectives are
+      unique-indexed so a re-run can't double-grade.</li>
+    <li><b>Race-proofing.</b> Postgres advisory locks and <code>FOR UPDATE SKIP LOCKED</code> task claiming
+      mean overlapping cron firings never collide or burn duplicate LLM calls.</li>
+    <li><b>A hard validator the AI can't bypass.</b> Risk limits are pure code, always the final word.</li>
+    <li><b>Tolerant parsing.</b> When the model wraps JSON in markdown fences, a forgiving parser handles
+      it instead of crashing the pipeline.</li>
+    <li><b>Plain-English by mandate.</b> The grader's prompt carries a banned-jargon list that forces every
+      explanation into language a non-expert can use.</li>
+    <li><b>Cost control as an interface.</b> All LLM traffic sits behind one function with swappable
+      backends — the POC runs at near-zero marginal cost and flips to a paid production transport with a
+      single environment variable, no code changes.</li>
+    <li><b>The system maps itself.</b> A live <b>System Map</b> turns the whole codebase into a navigable
+      knowledge graph — ~1,060 functions/classes/modules and ~1,700 import edges in ~66 clustered
+      subsystems — rebuilt automatically on every commit, so the architecture docs can't drift from the code.</li>
+  </ul>
+
+  <figure>
+    <img class="shot" src="assets/screenshot-system-map.png" alt="System Map knowledge graph page">
+    <figcaption>System Map — the codebase rendered as a live, clustered knowledge graph, rebuilt on every commit.</figcaption>
+  </figure>
+
+  <!-- ===================== RESULTS ===================== -->
+  <h2>The results</h2>
+  <ul>
+    <li><b>Runs unattended</b> through the trading session every weekday and silently no-ops outside the
+      window — no babysitting, no log spam.</li>
+    <li><b>Every decision is auditable.</b> Every signal yields exactly one explained decision; every
+      closed action yields exactly one plain-English grade.</li>
+    <li><b>The system improves itself</b> within a tightly bounded, human-gated, always-green workflow —
+      changes ship and self-verify, or revert automatically.</li>
+    <li><b>Six AI models compete head-to-head</b> (five live, one queued) on identical infrastructure with
+      fully isolated capital, per-model quota safety, and a self-improvement loop each.</li>
+    <li><b>Deployed on a single server</b> behind PM2, nginx, and Let's Encrypt — a deliberately small,
+      debuggable footprint with no queue, no Redis, no async sprawl.</li>
+  </ul>
+
+  <!-- ===================== REUSE / STACK ===================== -->
+  <h2>Where this applies to your business</h2>
+  <p>The trading domain is just the proving ground. The reusable asset is the <b>architecture</b>:</p>
+  <div class="reuse"><b>Deterministic producers propose → an AI judges the action → a hard validator guards
+    → a second AI grades the outcome → agents improve the loop.</b></div>
+  <p>That scaffold maps directly onto:</p>
+  <ul>
+    <li><b>AI agents over your CRM / ops data</b> — read records, qualify leads, draft outreach, update
+      fields, with every action logged and explained.</li>
+    <li><b>Document &amp; data automation</b> — invoices, contracts, and reports parsed by an LLM and routed,
+      with a hard validation gate before anything is committed.</li>
+    <li><b>Support-ticket triage &amp; content moderation</b> — high-volume decisions that need pre-action
+      judgment <i>and</i> an after-the-fact, human-readable rationale.</li>
+    <li><b>Replacing fragile no-code flows</b> — swap brittle Zapier/Make/n8n chains for a proper service
+      with idempotency, retries, audit logs, and cost controls a team can actually trust.</li>
+  </ul>
+
+  <h2>Tech stack</h2>
+  <table class="stack">
+    <tr><td>AI / automation</td><td>Claude (Anthropic API + CLI); multi-backend LLM orchestration — Gemini, Qwen3, Nemotron, opencode, Kiro</td></tr>
+    <tr><td>Backend</td><td>Python 3.11, PostgreSQL, cron</td></tr>
+    <tr><td>Interface</td><td>Streamlit dashboard (10 pages, read-only over Postgres)</td></tr>
+    <tr><td>Ops</td><td>PM2, nginx, Let's Encrypt, single Linux VPS</td></tr>
+  </table>
+
+  <footer>
+    <p><b>TechInject</b> builds production AI agent systems on real backends — not no-code prototypes.
+    Live operator dashboard and a code walkthrough available on request.
+    Research / paper-trading system; nothing here is investment advice.</p>
+  </footer>
+
+</div>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad:false, securityLevel:'loose', theme:'base',
+    flowchart:{useMaxWidth:true, htmlLabels:true, curve:'basis'},
+    themeVariables:{
+      fontFamily:'-apple-system,Segoe UI,Helvetica,Arial,sans-serif',
+      fontSize:'13px', lineColor:'#94a3b8',
+      primaryColor:'#f1f5f9', primaryBorderColor:'#cbd5e1', primaryTextColor:'#0f172a'
+    }
+  });
+  try{
+    await mermaid.run({querySelector:'.mermaid'});
+  }catch(e){ window.__mmdErr = String(e); }
+  window.__mmdDone = true;
+</script>
+</body>
+</html>
