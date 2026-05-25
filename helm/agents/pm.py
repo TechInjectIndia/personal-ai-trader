@@ -808,130 +808,275 @@ def run_weekly_review(*, model: str | None = None, mode: str | None = None,
 # proposal backlog. Unlike run_weekly_review it:
 #   * ignores the "nothing new since last run" + "unverified in flight" skip
 #     gates (a human explicitly nudged it),
-#   * clusters the WHOLE open backlog with the aggressive Jaccard deduper
-#     (helm.agents.backlog), not just the loose-title 30-day slice,
-#   * feeds the top-N deduped clusters to the SAME LLM machinery (SYSTEM_PROMPT,
-#     PM_SUGGESTION_SCHEMA, _validate_suggestion, create_task), so the agent
-#     itself decides accept/reject per cluster — there is NO human approval,
-#   * on ACCEPT marks the representative 'accepted' + supersedes the rest;
-#     on REJECT marks every member 'rejected'.
-# Bounded to <=3 clusters per call (same 0–3-tasks/run shape) so it drains
-# across repeated invocations rather than firing one giant LLM call.
+#   * feeds the PM a RANKED BATCH of RAW proposals (helm.agents.backlog's
+#     batch_open_proposals) and asks it to do the dedup SEMANTICALLY — the
+#     lexical Jaccard clusterer is NOT in the authoritative path (it produced
+#     ~zero dedup against the real backlog; restatements share no tokens).
+#   * the PM returns a per-proposal action list (accept / supersede / reject):
+#       - accept    → create ONE task + mark the proposal 'accepted',
+#       - supersede → mark a restatement 'superseded', noting the accepted id,
+#       - reject    → mark a low-value proposal 'rejected'.
+#   * NEW tasks created per pass are capped at the existing 0–3 shape so the
+#     Engineer isn't flooded; supersede/reject are UNBOUNDED per pass so a
+#     single batch can collapse dozens of restatements at once.
+# Designed to be called repeatedly (scripts/drain_backlog.py) until the backlog
+# is empty — far fewer passes than the old one-cluster-per-pass shape.
 
 BACKLOG_MAX_CLUSTERS_DEFAULT = 3
 
+# How many NEW tasks (action='accept') a single batch pass may create. Keeps
+# the Engineer's queue to the same 0–3 shape as the weekly review. supersede /
+# reject are deliberately NOT capped — a pass should be free to collapse the
+# whole long tail of restatements in one shot.
+BACKLOG_MAX_ACCEPTS_PER_PASS = 3
 
-def _supersede_members(member_ids: list[int], representative_id: int,
-                       note: str) -> list[int]:
-    """Mark every member except the representative as 'superseded'.
+# How many raw proposals to hand the PM in one batch. Big enough that genuine
+# restatements land in the same batch (so the PM can see and supersede them),
+# small enough to stay inside the model's context + the PM_BATCH token budget.
+BACKLOG_BATCH_SIZE_DEFAULT = 20
 
-    Only flips rows still in 'open' (idempotent across repeated drains).
-    Returns the ids actually moved.
+# Larger token ceiling than the weekly review: the batch response carries one
+# entry PER proposal (potentially 20+), not just 0–3 suggestions.
+PM_BATCH_MAX_TOKENS = 4000
+
+# Per-proposal action verbs the PM returns in a batch pass.
+BACKLOG_BATCH_ACTIONS = ("accept", "supersede", "reject")
+
+# Batch response schema — one entry per proposal the PM acted on. `accept`
+# carries the same task fields as a weekly create_task suggestion; `supersede`
+# carries the id of the accepted proposal it duplicates; `reject` is bare.
+PM_BACKLOG_BATCH_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "actions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "proposal_id": {"type": "integer"},
+                    "action": {
+                        "type": "string",
+                        "enum": list(BACKLOG_BATCH_ACTIONS),
+                    },
+                    # accept-only task fields (mandatory when action=accept)
+                    "task_type": {
+                        "type": "string",
+                        "enum": list(VALID_ENGINEER_TASK_TYPES),
+                    },
+                    "title": {"type": "string"},
+                    "rationale": {"type": "string"},
+                    "priority": {"type": "integer", "minimum": 1, "maximum": 5},
+                    "spec": {"type": "object"},
+                    # supersede-only field (mandatory when action=supersede)
+                    "supersedes_id": {"type": ["integer", "null"]},
+                    "status_note": {"type": "string"},
+                },
+                "required": ["proposal_id", "action"],
+            },
+        },
+        "summary": {"type": "string"},
+    },
+    "required": ["actions"],
+}
+
+
+# ─── batch action validation (semantic-dedup path) ────────────────────
+
+
+def _validate_batch_action(a: dict, *, is_house: bool,
+                           batch_ids: set[int]) -> tuple[bool, str]:
+    """Sanity-check one per-proposal batch action before acting on it.
+
+    Returns (ok, reason). Validates structurally only — semantic dedup quality
+    is the PM's job. `batch_ids` is the set of proposal ids actually present in
+    this batch; a `proposal_id` outside it is rejected (the PM may only act on
+    proposals it was shown). For action='accept' the same task-shape checks as
+    `_validate_suggestion` apply (valid task_type for the agent kind, non-empty
+    title/rationale, object spec, in-range priority).
     """
-    moved: list[int] = []
-    for pid in member_ids:
-        if pid == representative_id:
-            continue
-        if _apply_proposal_status(pid, "superseded", note):
-            moved.append(pid)
-    return moved
+    if not isinstance(a, dict):
+        return False, "action entry must be an object"
+
+    pid = a.get("proposal_id")
+    if not isinstance(pid, int) or isinstance(pid, bool):
+        return False, "proposal_id must be an integer"
+    if pid not in batch_ids:
+        return False, f"proposal_id {pid} not in this batch"
+
+    action = a.get("action")
+    if action not in BACKLOG_BATCH_ACTIONS:
+        return False, f"invalid action {action!r}"
+
+    if action == "supersede":
+        sup = a.get("supersedes_id")
+        if not isinstance(sup, int) or isinstance(sup, bool):
+            return False, "supersede requires integer supersedes_id"
+        if sup == pid:
+            return False, "a proposal cannot supersede itself"
+        return True, ""
+
+    if action == "reject":
+        return True, ""
+
+    # action == "accept" — must carry a valid, in-surface task.
+    task_type = a.get("task_type")
+    if task_type not in VALID_ENGINEER_TASK_TYPES:
+        return False, f"invalid task_type {task_type!r}"
+    if is_house and task_type in FREESTYLE_ENGINEER_TASK_TYPES:
+        return False, f"task_type {task_type!r} is freestyle-only, not valid for house"
+    if not is_house and task_type in HOUSE_ENGINEER_TASK_TYPES:
+        return False, f"task_type {task_type!r} is house-only, not valid for freestyle"
+
+    title = str(a.get("title") or "").strip()
+    rationale = str(a.get("rationale") or "").strip()
+    if not title or not rationale:
+        return False, "accept requires non-empty title and rationale"
+
+    if not isinstance(a.get("spec"), dict):
+        return False, "accept requires an object spec"
+
+    try:
+        priority = int(a.get("priority", 3))
+    except (TypeError, ValueError):
+        return False, "priority not an int"
+    if not 1 <= priority <= 5:
+        return False, f"priority out of range: {priority}"
+
+    return True, ""
 
 
-def _reject_members(member_ids: list[int], note: str) -> list[int]:
-    """Mark every member of a cluster as 'rejected'. Returns ids moved."""
-    moved: list[int] = []
-    for pid in member_ids:
-        if _apply_proposal_status(pid, "rejected", note):
-            moved.append(pid)
-    return moved
+def _backlog_proposal_view(p: dict) -> dict:
+    """Compact per-proposal view fed to the PM batch prompt. The PM dedups on
+    the words, so title + proposed_change + rationale are the load-bearing
+    fields; category and confidence give it ranking context."""
+    return {
+        "id": int(p["id"]),
+        "category": p.get("category"),
+        "confidence": p.get("confidence"),
+        "title": p.get("title"),
+        "proposed_change": p.get("proposed_change"),
+        "rationale": p.get("rationale"),
+    }
 
 
 def _build_backlog_prompt(agent: dict, goal: GoalBrief,
-                          clusters: list) -> str:
-    """User prompt for the backlog pass — same schema as the weekly review, but
-    the input is a deduped, ranked list of clusters (each its representative +
-    recurrence + member_ids) instead of the raw 30-day proposal slice.
+                          proposals: list[dict], *,
+                          max_accepts: int = BACKLOG_MAX_ACCEPTS_PER_PASS) -> str:
+    """User prompt for the SEMANTIC batch-consolidation pass.
 
-    The LLM is told: decide PER CLUSTER. action=create_task + status='accepted'
-    to ship the representative; action=reject_proposal + status='rejected' to
-    kill the whole cluster. proposal_id MUST be a cluster's representative_id.
+    The input is a RANKED BATCH of RAW open proposals (NOT lexical clusters):
+    the PM reads them and dedups by MEANING — restatements of the same idea
+    must merge even when they share no tokens (e.g. "R:R floor" vs
+    "reward-to-risk floor" vs "reward-vs-risk floor"). For each proposal in the
+    batch the PM returns exactly one action:
+
+      * accept    — the BEST distinct idea in a group of restatements. Carries
+                    task fields (task_type/title/rationale/priority/spec). This
+                    is what gets built. AT MOST `max_accepts` accepts per batch.
+      * supersede — a restatement of an accepted idea. Carries `supersedes_id`
+                    = the proposal_id it duplicates. UNBOUNDED per batch.
+      * reject    — genuinely low-value / already-addressed / out-of-surface.
+                    UNBOUNDED per batch.
+
+    Proposals the PM omits stay 'open' for the next batch.
     """
     is_house = agent["id"] == HOUSE_COMPETITOR_ID
     valid_types = list(
         HOUSE_ENGINEER_TASK_TYPES if is_house else FREESTYLE_ENGINEER_TASK_TYPES
     ) + ["needs_human"]
-    cluster_payload = [
-        cl.to_prompt_dict() if hasattr(cl, "to_prompt_dict") else cl
-        for cl in clusters
-    ]
+    proposal_payload = [_backlog_proposal_view(p) for p in proposals]
     payload = {
         "now_ist": datetime.now(IST).strftime("%Y-%m-%d %H:%M"),
-        "mode": "backlog_drain",
+        "mode": "backlog_drain_batch",
         "agent": agent,
         "valid_task_types_for_this_agent": valid_types,
         "goal_brief": goal.to_prompt_dict(),
-        "proposal_clusters": cluster_payload,
+        "open_proposals": proposal_payload,
+        "max_accepts_this_batch": max_accepts,
         "notes": (
-            "BACKLOG-DRAIN MODE. You are clearing this agent's EXISTING open "
-            "proposal backlog, deduped into the clusters below. Decide PER "
-            "CLUSTER — one suggestion per cluster, max "
-            f"{len(cluster_payload)} suggestions total. "
-            "For each cluster set `proposal_id` to that cluster's "
-            "`representative_id` (NEVER a member id, NEVER null). "
-            "To SHIP a cluster: action='create_task', "
-            "proposal_status_change='accepted'. To KILL a cluster as "
-            "noise/already-addressed/too-costly: action='reject_proposal', "
-            "proposal_status_change='rejected'. `recurrence` (how many open "
-            "proposals collapsed into the cluster) is the strongest signal — "
-            "quote it in your rationale. "
+            "BACKLOG-DRAIN (SEMANTIC CONSOLIDATION). The list below is a batch "
+            "of this agent's EXISTING open proposals, ranked by category then "
+            "confidence. They are NOT pre-deduplicated — many are the SAME idea "
+            "restated with different wording or abbreviations (e.g. 'R:R floor' "
+            "== 'reward-to-risk floor' == 'reward-vs-risk floor'). Your job is "
+            "to consolidate them by MEANING, not by shared words.\n\n"
+            "For EVERY proposal in the batch, emit ONE entry in `actions`:\n"
+            "  - 'accept'    : this is the single BEST, distinct idea. Provide "
+            "task_type, title, rationale, priority (1-5), spec. The Engineer "
+            "will build exactly this. Accept the strongest phrasing of each "
+            "distinct idea — and AT MOST "
+            f"{max_accepts} accepts in this whole batch.\n"
+            "  - 'supersede' : this restates an idea you accepted (or already "
+            "shipped). Set `supersedes_id` to the accepted proposal_id it "
+            "duplicates. Use this LIBERALLY — every redundant restatement of an "
+            "accepted idea should be superseded. No limit on supersedes.\n"
+            "  - 'reject'    : genuinely low-value, already-addressed, or "
+            "out-of-surface noise. No limit on rejects.\n\n"
+            "Prefer accept+supersede over reject when proposals are real but "
+            "duplicative: one accept, the rest superseded to it. Only reject "
+            "what has no value at all. You may omit a proposal to leave it open "
+            "for a later batch, but prefer to resolve everything you can. "
+            "Cite how many restatements you collapsed in each accept's "
+            "rationale.\n\n"
             + ("This is the HOUSE agent — use code task_types." if is_house else
                "This is a FREESTYLE competitor — use ONLY persona_edit / "
-               "strategy_config_edit / needs_human.")
+               "strategy_config_edit / needs_human for accepts.")
         ),
     }
     return (
-        "Drain this agent's open-proposal backlog. Decide accept or reject for "
-        "each cluster below.\n\n"
+        "Consolidate this agent's open-proposal backlog SEMANTICALLY. Return a "
+        "per-proposal action list (accept / supersede / reject).\n\n"
         "```json\n" + json.dumps(payload, indent=2, default=str) + "\n```"
     )
 
 
 def run_backlog_drain(competitor_id: str, *, model: str | None = None,
                       mode: str | None = None,
-                      max_clusters: int = BACKLOG_MAX_CLUSTERS_DEFAULT) -> dict:
-    """One bounded backlog-drain pass for a single agent.
+                      max_clusters: int = BACKLOG_MAX_CLUSTERS_DEFAULT,
+                      batch_size: int = BACKLOG_BATCH_SIZE_DEFAULT) -> dict:
+    """One bounded backlog-drain pass for a single agent — SEMANTIC dedup.
 
-    Clusters the agent's whole status='open' backlog, feeds the top
-    `max_clusters` (capped at 3 to keep the 0–3-shape) to the PM's existing LLM
-    decision machinery, and applies the verdict per cluster:
+    Loads a RANKED BATCH of the agent's raw status='open' proposals (NOT lexical
+    clusters; the Jaccard clusterer demonstrably under-dedups) and asks the PM
+    to consolidate them by MEANING. The PM returns a per-proposal action list:
 
-      * create_task → create ONE task for the representative, mark it 'accepted',
-        and supersede the cluster's other members.
-      * reject_proposal → mark every member 'rejected'.
+      * accept    → create ONE task + mark the proposal 'accepted'. Capped at
+                    `max_clusters` (kept ≤3) accepts per pass so the Engineer's
+                    queue stays the same 0–3 shape.
+      * supersede → mark the restatement 'superseded' with a status_note
+                    referencing the accepted proposal id. UNBOUNDED per pass.
+      * reject    → mark the proposal 'rejected'. UNBOUNDED per pass.
+
+    `batch_size` is how many raw proposals are shown to the PM in this pass (the
+    highest-ranked slice). Because one pass can supersede/reject the whole long
+    tail, the backlog drains in far fewer passes than one-cluster-per-pass.
 
     Records an `agent_runs` row exactly like the weekly path. Returns a summary
-    dict with the same key set as `_review_one_agent` plus `clusters_seen` and
-    `proposals_superseded`. Designed to be called repeatedly (by
-    scripts/drain_backlog.py) until no open proposals remain.
+    dict with `tasks_created`, `proposals_accepted`, `proposals_superseded`,
+    `proposals_rejected`, and `clusters_seen` (= proposals shown this batch, so
+    the drain loop's progress check keeps working). Designed to be called
+    repeatedly (scripts/drain_backlog.py) until no open proposals remain.
     """
-    from helm.agents.backlog import cluster_open_proposals
+    from helm.agents.backlog import batch_open_proposals
 
     model = model or os.environ.get("DECIDER_MODEL", DECIDER_MODEL_DEFAULT)
     mode = (mode or os.environ.get("LLM_MODE", "cli")).strip().lower()
-    max_clusters = max(0, min(int(max_clusters), 3))
+    # `max_clusters` doubles as the accept cap here (kept to the 0–3 shape so the
+    # Engineer isn't flooded). supersede / reject are NOT capped.
+    max_accepts = max(0, min(int(max_clusters), BACKLOG_MAX_ACCEPTS_PER_PASS))
+    batch_size = max(1, int(batch_size))
 
     is_house = competitor_id == HOUSE_COMPETITOR_ID
 
     with record_run("pm", "backlog_drain", model=model, llm_mode=mode,
                     competitor_id=competitor_id) as run:
-        all_clusters = cluster_open_proposals(competitor_id)
-        clusters = all_clusters[:max_clusters]
+        batch = batch_open_proposals(competitor_id, limit=batch_size)
 
-        if not clusters:
+        if not batch:
             run.outcome = "noop"
             run.summary = f"[{competitor_id}] backlog empty"
-            run.add_trace(competitor_id=competitor_id, mode="backlog_drain",
-                          clusters_seen=0)
+            run.add_trace(competitor_id=competitor_id,
+                          mode="backlog_drain_batch", clusters_seen=0)
             return {
                 "run_id": run.run_id,
                 "competitor_id": competitor_id,
@@ -940,41 +1085,32 @@ def run_backlog_drain(competitor_id: str, *, model: str | None = None,
                 "proposals_superseded": [],
                 "proposals_rejected": [],
                 "clusters_seen": 0,
+                "proposals_seen": 0,
                 "deferred": False,
                 "reason": "backlog empty",
             }
 
         agent = _agent_descriptor(competitor_id)
         goal = build_goal_brief(competitor_id=competitor_id)
-
-        # Map representative_id → cluster so we can supersede the right members
-        # after the LLM picks a cluster by its representative_id.
-        by_rep = {cl.representative_id: cl for cl in clusters}
+        batch_ids = {int(p["id"]) for p in batch}
 
         run.add_trace(
             competitor_id=competitor_id,
-            mode="backlog_drain",
+            mode="backlog_drain_batch",
             inputs={
-                "open_clusters_total": len(all_clusters),
-                "clusters_this_pass": len(clusters),
-                "cluster_summary": [
-                    {"representative_id": cl.representative_id,
-                     "recurrence": cl.recurrence,
-                     "confidence": cl.confidence,
-                     "score": cl.score,
-                     "members": len(cl.member_ids)}
-                    for cl in clusters
-                ],
+                "batch_size": len(batch),
+                "max_accepts": max_accepts,
+                "batch_proposal_ids": sorted(batch_ids),
             },
         )
 
-        user = _build_backlog_prompt(agent, goal, clusters)
+        user = _build_backlog_prompt(agent, goal, batch, max_accepts=max_accepts)
         try:
             parsed = complete_json(
                 SYSTEM_PROMPT, user,
-                schema=PM_SUGGESTION_SCHEMA,
+                schema=PM_BACKLOG_BATCH_SCHEMA,
                 model=model, mode=mode,
-                max_tokens=PM_MAX_TOKENS,
+                max_tokens=PM_BATCH_MAX_TOKENS,
                 temperature=PM_TEMPERATURE,
             )
         except LLMError as exc:
@@ -982,87 +1118,115 @@ def run_backlog_drain(competitor_id: str, *, model: str | None = None,
             run.add_trace(llm_error=str(exc)[:500])
             raise
 
-        suggestions_raw = parsed.get("suggestions") or []
-        if not isinstance(suggestions_raw, list):
-            suggestions_raw = []
-        deferred_reason = str(parsed.get("deferred_reason") or "").strip()
+        actions_raw = parsed.get("actions") or []
+        if not isinstance(actions_raw, list):
+            actions_raw = []
+        batch_summary = str(parsed.get("summary") or "").strip()
 
         tasks_created: list[int] = []
         proposals_accepted: list[int] = []
         proposals_superseded: list[int] = []
         proposals_rejected: list[int] = []
         rejected_for_invalid: list[dict] = []
-        handled_reps: set[int] = set()
+        handled_ids: set[int] = set()
+        accept_task_by_pid: dict[int, int] = {}
 
-        for s in suggestions_raw[:max_clusters]:
-            if not isinstance(s, dict):
+        # PASS 1 — accepts first, so supersedes can reference a task/accept that
+        # has already landed. Accepts are capped; supersede/reject are not.
+        for a in actions_raw:
+            if not isinstance(a, dict) or a.get("action") != "accept":
                 continue
-            ok, why = _validate_suggestion(s, is_house=is_house)
+            ok, why = _validate_batch_action(a, is_house=is_house,
+                                             batch_ids=batch_ids)
             if not ok:
-                rejected_for_invalid.append({"suggestion": s, "reason": why})
+                rejected_for_invalid.append({"action": a, "reason": why})
                 continue
-
-            proposal_id = s.get("proposal_id")
-            cluster = by_rep.get(proposal_id) if proposal_id is not None else None
-            if cluster is None:
+            pid = int(a["proposal_id"])
+            if pid in handled_ids:
                 rejected_for_invalid.append(
-                    {"suggestion": s,
-                     "reason": f"proposal_id {proposal_id!r} is not a "
-                               "representative of any cluster this pass"})
+                    {"action": a, "reason": f"proposal {pid} already handled"})
                 continue
-            if cluster.representative_id in handled_reps:
+            if len(tasks_created) >= max_accepts:
+                # Over the accept cap — leave this proposal 'open' for a later
+                # batch rather than flooding the Engineer.
                 rejected_for_invalid.append(
-                    {"suggestion": s,
-                     "reason": f"cluster {cluster.representative_id} already "
-                               "handled in this pass"})
+                    {"action": a,
+                     "reason": f"accept cap {max_accepts} reached this pass"})
                 continue
 
-            action = s["action"]
-            status_note = str(s.get("status_note") or "")
-            rep_id = cluster.representative_id
-
-            if action == "reject_proposal":
-                note = status_note or "rejected by pm (backlog drain)"
-                moved = _reject_members(cluster.member_ids, note)
-                proposals_rejected.extend(moved)
-                handled_reps.add(rep_id)
-                continue
-
-            # action == 'create_task' → ship the representative.
+            status_note = str(a.get("status_note") or "")
             try:
                 task_id = create_task(
                     created_by="pm",
-                    title=str(s["title"]).strip()[:200],
-                    rationale=str(s["rationale"]).strip()[:2000],
-                    task_type=s["task_type"],
-                    spec=s["spec"],
-                    proposal_id=rep_id,
-                    priority=int(s.get("priority", 3)),
+                    title=str(a["title"]).strip()[:200],
+                    rationale=str(a["rationale"]).strip()[:2000],
+                    task_type=a["task_type"],
+                    spec=a["spec"],
+                    proposal_id=pid,
+                    priority=int(a.get("priority", 3)),
                     competitor_id=competitor_id,
                 )
             except ValueError as exc:
                 rejected_for_invalid.append(
-                    {"suggestion": s, "reason": f"create_task: {exc}"})
+                    {"action": a, "reason": f"create_task: {exc}"})
                 continue
 
             tasks_created.append(task_id)
-            handled_reps.add(rep_id)
-
+            accept_task_by_pid[pid] = task_id
+            handled_ids.add(pid)
             if _apply_proposal_status(
-                    rep_id, "accepted",
+                    pid, "accepted",
                     status_note or f"accepted by pm via task {task_id} "
                                    "(backlog drain)"):
-                proposals_accepted.append(rep_id)
-            # Supersede the rest of the cluster regardless of whether the
-            # representative was still 'open' (it should be).
-            sup_note = (status_note
-                        or f"superseded by representative {rep_id} "
-                           f"(task {task_id}, backlog drain)")
-            proposals_superseded.extend(
-                _supersede_members(cluster.member_ids, rep_id, sup_note))
+                proposals_accepted.append(pid)
+
+        accepted_set = set(proposals_accepted) | set(accept_task_by_pid)
+
+        # PASS 2 — supersedes + rejects. Unbounded.
+        for a in actions_raw:
+            if not isinstance(a, dict):
+                continue
+            action = a.get("action")
+            if action == "accept":
+                continue  # already handled in pass 1
+            ok, why = _validate_batch_action(a, is_house=is_house,
+                                             batch_ids=batch_ids)
+            if not ok:
+                rejected_for_invalid.append({"action": a, "reason": why})
+                continue
+            pid = int(a["proposal_id"])
+            if pid in handled_ids:
+                rejected_for_invalid.append(
+                    {"action": a, "reason": f"proposal {pid} already handled"})
+                continue
+
+            status_note = str(a.get("status_note") or "")
+
+            if action == "reject":
+                note = status_note or "rejected by pm (backlog drain)"
+                if _apply_proposal_status(pid, "rejected", note):
+                    proposals_rejected.append(pid)
+                handled_ids.add(pid)
+                continue
+
+            # action == "supersede"
+            sup_id = a.get("supersedes_id")
+            # Reference is informational; if it points at an accept this pass we
+            # note the task too. We do NOT require the target to be accepted in
+            # the same batch (it may have shipped earlier).
+            ref = f"superseded by proposal {sup_id} (backlog drain)"
+            if isinstance(sup_id, int) and sup_id in accept_task_by_pid:
+                ref = (f"superseded by accepted proposal {sup_id} "
+                       f"(task {accept_task_by_pid[sup_id]}, backlog drain)")
+            elif isinstance(sup_id, int) and sup_id in accepted_set:
+                ref = f"superseded by accepted proposal {sup_id} (backlog drain)"
+            note = status_note or ref
+            if _apply_proposal_status(pid, "superseded", note):
+                proposals_superseded.append(pid)
+            handled_ids.add(pid)
 
         run.summary = (
-            f"[{competitor_id}] backlog: clusters={len(clusters)} "
+            f"[{competitor_id}] backlog batch={len(batch)} "
             f"tasks={len(tasks_created)} accepted={len(proposals_accepted)} "
             f"superseded={len(proposals_superseded)} "
             f"rejected={len(proposals_rejected)}"
@@ -1072,13 +1236,13 @@ def run_backlog_drain(competitor_id: str, *, model: str | None = None,
             proposals_accepted=proposals_accepted,
             proposals_superseded=proposals_superseded,
             proposals_rejected=proposals_rejected,
-            invalid_suggestions=rejected_for_invalid,
-            deferred_reason=deferred_reason,
+            invalid_actions=rejected_for_invalid,
+            batch_summary=batch_summary,
         )
         insert_audit("agents", "pm_backlog_drain_done",
                      {"run_id": run.run_id,
                       "competitor_id": competitor_id,
-                      "clusters_seen": len(clusters),
+                      "proposals_seen": len(batch),
                       "tasks_created": tasks_created,
                       "proposals_accepted": proposals_accepted,
                       "proposals_superseded": proposals_superseded,
@@ -1091,9 +1255,12 @@ def run_backlog_drain(competitor_id: str, *, model: str | None = None,
             "proposals_accepted": proposals_accepted,
             "proposals_superseded": proposals_superseded,
             "proposals_rejected": proposals_rejected,
-            "clusters_seen": len(clusters),
+            # `clusters_seen` retained for the drain loop's progress check; now
+            # it means "raw proposals shown to the PM this batch".
+            "clusters_seen": len(batch),
+            "proposals_seen": len(batch),
             "deferred": False,
-            "reason": deferred_reason or "",
+            "reason": batch_summary or "",
         }
 
 

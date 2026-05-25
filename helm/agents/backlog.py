@@ -8,12 +8,31 @@ are mostly restatements of a few dozen distinct ideas. The weekly PM review
 clusters only by an exact loose-title key (`pm._cluster_key`), which leaves a
 long tail of phrasing variants un-collapsed.
 
-This module clusters more aggressively — Jaccard token overlap on a normalized
-`title + proposed_change` — so the PM backlog mode can feed the LLM a tractable
-shortlist of distinct ideas instead of 228 rows. It is a PURE module: the only
-DB access is the loader `cluster_open_proposals`; the clustering/ranking math is
-factored into stdlib-only pure functions (`cluster_proposals`,
-`_jaccard`, `_normalize`) that the unit tests exercise without a live DB.
+IMPORTANT — lexical clustering is APPROXIMATE only. A dry-run against the real
+backlog showed Jaccard token overlap produces ~zero deduplication: the
+proposals restate the SAME idea with different vocabulary/abbreviations and
+share almost no tokens. For example all of these are one idea but share no
+mergeable tokens —
+    "Enforce R:R threshold as a hard gate, not a soft guideline"
+    "Enforce hard reward-vs-risk floor before taking any trade"
+    "Hardcode R:R floor check into decider instructions"
+No lexical metric (Jaccard or TF-IDF) can reliably catch this; only semantic
+understanding can. Therefore the AUTHORITATIVE dedup decision is made by the PM
+LLM at drain time (see helm.agents.pm.run_backlog_drain), which reads a ranked
+batch of raw proposals and decides accept / supersede / reject semantically.
+
+What lives here is DEMOTED to two supporting roles only:
+  (a) the `--dry-run` preview — an approximate lexical grouping the operator can
+      eyeball before nudging, clearly labelled as non-authoritative;
+  (b) optional pre-bucketing by category (`batch_open_proposals`) so the drain
+      can size each PM batch coherently.
+The drain's real dedup MUST NOT depend on the lexical clusterer.
+
+This module is otherwise PURE: the only DB access is the loaders
+(`cluster_open_proposals`, `batch_open_proposals`, `open_proposal_count`); the
+clustering/ranking math is factored into stdlib-only pure functions
+(`cluster_proposals`, `_jaccard`, `_normalize`, `rank_proposals_for_batch`) that
+the unit tests exercise without a live DB.
 
 No new dependencies — stdlib only (re, itertools via simple loops).
 """
@@ -27,11 +46,13 @@ from helm.config import HOUSE_COMPETITOR_ID, HOUSE_TRADE_FILTER
 from helm.data.store import conn
 
 # Jaccard token-overlap threshold above which two proposals (within the same
-# category) are considered near-duplicates and merged into one cluster. 0.6 is
-# deliberately loose enough to fold phrasing variants of the same idea together
-# but tight enough that two genuinely different ideas in the same category stay
-# apart. Tune here; the unit tests pin the qualitative behaviour, not the value.
-DEFAULT_SIMILARITY_THRESHOLD = 0.6
+# category) are considered near-duplicates and merged into one APPROXIMATE
+# cluster for the dry-run preview. Lowered to 0.45 (from 0.6) so the preview at
+# least HINTS at groups — but real-world restatements share so few tokens that
+# even this leaves most ideas un-merged, which is exactly why the authoritative
+# dedup is done semantically by the PM, not here. Tune freely: the unit tests
+# pin qualitative behaviour, not the exact value.
+DEFAULT_SIMILARITY_THRESHOLD = 0.45
 
 # Tiny stop-word list so high-frequency filler ("the", "a", "to") doesn't
 # inflate the overlap between otherwise-unrelated proposals. Kept minimal and
@@ -258,6 +279,87 @@ def cluster_open_proposals(
     return cluster_proposals(proposals, threshold=threshold)
 
 
+# ─── batch ranking (PM semantic-dedup input) ─────────────────────────
+# The drain feeds the PM a RANKED BATCH of raw proposals (not lexical cluster
+# representatives) so the PM can do the dedup semantically. Ranking is pure:
+# group by category for coherence, highest-confidence first within a category,
+# ties broken by most-recent then id. Categories are ordered by their best
+# (highest-confidence) member so the strongest theme leads the batch.
+
+
+def rank_proposals_for_batch(
+    proposals: list[dict],
+    *,
+    limit: int | None = None,
+) -> list[dict]:
+    """Pure ranking for one PM batch. No DB.
+
+    Orders raw proposals so a single batch is coherent for semantic dedup:
+    grouped by category (categories ordered by their highest-confidence member,
+    desc), and within each category highest-confidence first (ties → most
+    recent, then id asc for stability). `limit` (if given) truncates to the
+    first N after ranking — the head of the list is the highest-value, most
+    cluster-prone slice, which is what we want the PM to consolidate first.
+
+    Each proposal is passed through unchanged (extra keys preserved).
+    """
+    def _conf(p: dict) -> int:
+        c = p.get("confidence")
+        return int(c) if c is not None else 0
+
+    # Best confidence per category drives category order.
+    cat_best: dict[str, int] = {}
+    for p in proposals:
+        cat = p.get("category") or ""
+        cat_best[cat] = max(cat_best.get(cat, -1), _conf(p))
+
+    def sort_key(p: dict) -> tuple:
+        cat = p.get("category") or ""
+        # Negate confidences for descending; str(created_ts) sorts ISO-ish
+        # timestamps chronologically, negated lexically via reverse below is
+        # awkward, so we key on the raw string and rely on tuple ordering: we
+        # want most-recent first, so invert by using a high sentinel comparison.
+        return (
+            -cat_best[cat],          # strongest category first
+            cat,                     # stable category grouping
+            -_conf(p),               # highest confidence first within category
+            _neg_ts(p.get("created_ts")),  # most recent first
+            int(p.get("id", 0)),     # stable tiebreak
+        )
+
+    ranked = sorted(proposals, key=sort_key)
+    if limit is not None and limit >= 0:
+        ranked = ranked[:limit]
+    return ranked
+
+
+def _neg_ts(ts) -> str:
+    """Return a sort token that orders most-recent FIRST under ascending sort.
+
+    ISO-ish timestamps sort lexically the same as chronologically; to flip to
+    descending without parsing, we complement each character. Absent ts → ""
+    which (complemented) sorts last (oldest), the desired behaviour."""
+    s = str(ts or "")
+    # Per-char complement against a high codepoint keeps ordering inverted while
+    # staying a plain comparable string (stdlib-only, no datetime parsing).
+    return "".join(chr(0x10FFFF - ord(ch)) for ch in s)
+
+
+def batch_open_proposals(
+    competitor_id: str,
+    *,
+    limit: int | None = None,
+) -> list[dict]:
+    """Load + rank one agent's whole status='open' backlog as RAW proposals.
+
+    This is the authoritative input to the PM's semantic dedup pass — it does
+    NOT cluster. Returns ranked proposal dicts (see rank_proposals_for_batch);
+    `limit` caps the batch size handed to a single PM call.
+    """
+    proposals = _load_open_proposals(competitor_id)
+    return rank_proposals_for_batch(proposals, limit=limit)
+
+
 def open_proposal_count(competitor_id: str) -> int:
     """How many status='open' proposals remain for this agent. Used by the
     drain loop to decide when the backlog is empty."""
@@ -279,6 +381,8 @@ __all__ = [
     "ProposalCluster",
     "cluster_proposals",
     "cluster_open_proposals",
+    "rank_proposals_for_batch",
+    "batch_open_proposals",
     "open_proposal_count",
     "DEFAULT_SIMILARITY_THRESHOLD",
 ]
