@@ -227,6 +227,9 @@ BACKEND_QUOTAS: dict[str, "BackendQuota"] = {
     "claude":   BackendQuota(max_calls=2000, window_minutes=24 * 60),
     "opencode": BackendQuota(max_calls=2000, window_minutes=24 * 60),
     "gemini":   BackendQuota(max_calls=200,  window_minutes=24 * 60),
+    # Kiro CLI — treat conservatively like gemini until real daily limits are
+    # known; tune upward once Kiro's quota policy is confirmed.
+    "kiro":     BackendQuota(max_calls=200,  window_minutes=24 * 60),
     # OpenRouter free models: daily ceiling stays 24h, but a returned 429 is
     # transient upstream saturation — back off only ~10 min and retry, don't
     # bench for the day.

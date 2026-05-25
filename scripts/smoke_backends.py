@@ -1,6 +1,6 @@
 """Smoke-test the competition CLI backends in helm.llm's registry.
 
-Runs ONE tiny headless call per backend (claude, gemini, qwen, nemotron,
+Runs ONE tiny headless call per backend (claude, gemini, kiro, qwen, nemotron,
 opencode) asking for a trivial JSON object, classifies each backend, and
 prints a result matrix. qwen + nemotron go via OpenRouter (need
 OPENROUTER_API_KEY); the rest are local CLIs. Designed to be re-run by the
@@ -58,10 +58,12 @@ SMOKE_SCHEMA = {
 }
 
 # CLI backends: map each to its binary name so we can report "NOT-INSTALLED"
-# without invoking the CLI.
+# without invoking the CLI.  `kiro` honours the KIRO_CLI_CMD env var override
+# (same convention as _adapter_kiro in helm/llm.py).
 _BINARIES: dict[str, str] = {
     "claude": "claude",
     "gemini": "gemini",
+    "kiro": os.environ.get("KIRO_CLI_CMD", "kiro"),
     "opencode": "opencode",
 }
 
