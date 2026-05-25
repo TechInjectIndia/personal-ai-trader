@@ -24,9 +24,15 @@ import pandas as pd
 import streamlit as st
 
 from helm.dashboard.agents import HOUSE_ID, agent_label, agent_selectbox, scope_predicate
-from helm.dashboard.format import IST, fmt_clock, fmt_ist, wrapped_table
+from helm.dashboard.format import IST, fmt_clock, fmt_ist, paginate, wrapped_table
 from helm.dashboard.theme import apply_theme, page_header
 from helm.data.store import conn
+
+# Hard cap on rows fetched per query — a wide date range over a busy agent can
+# return thousands of retros; we render a page at a time (see RETROS_PER_PAGE)
+# so the cap only bounds memory, not what the user can browse to.
+MAX_RETROS = 1000
+RETROS_PER_PAGE = 15
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 VENV_PYTHON = REPO_ROOT / ".venv" / "bin" / "python"
@@ -117,6 +123,7 @@ def fetch_retros(
         LEFT JOIN signals      s ON s.id = d.signal_id
         WHERE {" AND ".join(clauses)}
         ORDER BY r.created_ts DESC
+        LIMIT {MAX_RETROS}
     """
     with conn() as c:
         return list(c.execute(sql, tuple(args)))
@@ -196,8 +203,18 @@ for i, label in enumerate(BADGES.keys()):
 
 # ───────────────────────── per-retro detail ─────────────────────────
 st.subheader("Reviews")
+if len(retros) >= MAX_RETROS:
+    st.caption(
+        f"Showing the most recent {MAX_RETROS} reviews — narrow the date range "
+        "to see older ones."
+    )
 
-for r in retros:
+# Each review renders as a heavy expander (multi-column narrative + nested
+# facts table); rendering hundreds at once is what made this page lag. Paginate
+# the *render* so only one page of expanders is built per run.
+page_retros = paginate(retros, key="retros", per_page=RETROS_PER_PAGE, label="reviews")
+
+for r in page_retros:
     is_trade = r["kind"] == "TRADE"
     sym = r["t_symbol"] if is_trade else r["s_symbol"]
     when = fmt_ist(r["created_ts"])

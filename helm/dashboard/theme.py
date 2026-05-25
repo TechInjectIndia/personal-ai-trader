@@ -305,6 +305,64 @@ hr, [data-testid="stDivider"] hr { border-color: #1F2733 !important; }
 .helm-user-name { font-size: 0.8rem; font-weight: 600; color: #E6EDF3; }
 .helm-user-sub  { font-size: 0.66rem; color: #7E8BA3; font-variant-numeric: tabular-nums; }
 
+/* ── agent avatars + roster cards (Competition League) ─────────────── */
+.helm-av {
+  border-radius: 999px; flex: none; display: inline-grid; place-items: center;
+  font-weight: 700; color: #fff; letter-spacing: 0.02em;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.18), 0 2px 6px rgba(0,0,0,0.35);
+}
+.helm-agent-grid {
+  display: grid; grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr));
+  gap: 14px; margin: 0.2rem 0 0.6rem;
+}
+@media (max-width: 1180px) { .helm-agent-grid { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+@media (max-width: 720px)  { .helm-agent-grid { grid-template-columns: 1fr; } }
+.helm-agent-card {
+  display: flex; flex-direction: column; gap: 10px;
+  background: linear-gradient(180deg, #171D28 0%, #12161F 100%);
+  border: 1px solid #232B3A; border-radius: 14px; padding: 14px 16px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 8px 22px rgba(0,0,0,0.28);
+  transition: transform .16s ease, border-color .16s ease;
+}
+.helm-agent-card:hover { transform: translateY(-2px); border-color: #33405A; }
+.helm-agent-card.is-live { border-color: rgba(34,197,94,0.45); }
+.helm-agent-top { display: flex; align-items: flex-start; gap: 11px; }
+.helm-agent-id { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.helm-agent-name { font-size: 0.96rem; font-weight: 700; color: #E6EDF3; line-height: 1.2; }
+.helm-agent-meta {
+  font-size: 0.68rem; color: #7E8BA3; text-transform: uppercase;
+  letter-spacing: 0.05em; margin-top: 2px;
+}
+.helm-agent-pills { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.helm-agent-persona {
+  font-size: 0.78rem; color: #94A2B8; line-height: 1.4;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.helm-agent-sep { height: 1px; background: #232B3A; }
+.helm-team-label {
+  font-size: 0.62rem; font-weight: 600; letter-spacing: 0.07em;
+  text-transform: uppercase; color: #6E7B91; margin-bottom: 5px;
+}
+.helm-team { display: flex; gap: 7px; flex-wrap: wrap; }
+.helm-team-chip {
+  display: inline-flex; align-items: center; gap: 6px; flex: 1; min-width: 0;
+  background: #141A24; border: 1px solid #232B3A; border-radius: 9px;
+  padding: 6px 9px; font-size: 0.72rem; color: #C3CCDA; white-space: nowrap;
+}
+.helm-team-role { font-weight: 700; color: #AEB9CB; }
+.helm-team-sub { color: #6E7B91; font-variant-numeric: tabular-nums; }
+.helm-tdot { width: 8px; height: 8px; border-radius: 999px; flex: none; }
+.helm-tdot--ok    { background: #22C55E; }
+.helm-tdot--error { background: #F43F5E; }
+.helm-tdot--noop  { background: #5E6B80; }
+.helm-tdot--run   { background: #22C55E; box-shadow: 0 0 0 3px rgba(34,197,94,0.22); animation: helmpulse 1.4s infinite; }
+.helm-tdot--none  { background: #2C3647; }
+.helm-agent-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 0.78rem; color: #94A2B8;
+}
+.helm-agent-foot b { color: #E6EDF3; font-variant-numeric: tabular-nums; }
+
 /* ── KPI card grid (equal-height, icon'd, never-truncating) ────────── */
 .helm-kpis {
   display: grid;
@@ -469,6 +527,98 @@ def user_chip(name: str, sub: str | None = None) -> str:
     )
 
 
+# ── agent avatars (deterministic monogram, backend-tinted; no assets) ──
+# Each competitor backend gets a stable two-stop gradient so the same agent
+# always wears the same colour. No emoji, no external logos — themed to match
+# the duotone icon set.
+BACKEND_PALETTE: dict[str, tuple[str, str]] = {
+    "claude":   ("#D97757", "#9A3412"),   # anthropic clay
+    "gemini":   ("#4F86F7", "#1D4ED8"),   # google blue
+    "qwen":     ("#8B5CF6", "#5B21B6"),   # violet
+    "nemotron": ("#22C55E", "#15803D"),   # nvidia green
+    "opencode": ("#F59E0B", "#B45309"),   # amber
+    "kiro":     ("#38BDF8", "#0369A1"),   # sky
+}
+_DEFAULT_AV = ("#6366F1", "#4338CA")
+
+
+def agent_avatar(name: str, backend: str = "", *, size: int = 38) -> str:
+    """Return HTML for a circular monogram avatar, tinted by ``backend``.
+
+    Deterministic: same (name, backend) → same colour + initials every render.
+    """
+    start, end = BACKEND_PALETTE.get((backend or "").lower(), _DEFAULT_AV)
+    fs = max(11, int(size * 0.4))
+    return (
+        f'<span class="helm-av" style="width:{size}px;height:{size}px;'
+        f'font-size:{fs}px;background:linear-gradient(150deg,{start},{end});">'
+        f"{html.escape(_initials(name))}</span>"
+    )
+
+
+def team_chip(role: str, kind: str, sub: str = "", *, title: str = "") -> str:
+    """One PM/Engineer/Tester status chip: coloured dot + role + sub-label.
+
+    ``kind`` ∈ ok / error / noop / run / none — drives the dot colour (``run``
+    pulses). ``sub`` is a short status (e.g. last-run age or "running");
+    ``title`` becomes a hover tooltip with the full summary.
+    """
+    title_attr = f' title="{html.escape(title)}"' if title else ""
+    sub_html = f'<span class="helm-team-sub">{html.escape(sub)}</span>' if sub else ""
+    return (
+        f'<span class="helm-team-chip"{title_attr}>'
+        f'<span class="helm-tdot helm-tdot--{kind}"></span>'
+        f'<span class="helm-team-role">{html.escape(role)}</span>{sub_html}</span>'
+    )
+
+
+def agent_card(
+    *,
+    name: str,
+    backend: str = "",
+    persona: str = "",
+    pills_html: str = "",
+    team_html: str = "",
+    footer_left: str = "",
+    footer_right: str = "",
+    live: bool = False,
+) -> str:
+    """Compose one competitor roster card: avatar + identity + status pills +
+    PM/Engineer/Tester team strip + optional footer. Render a list with
+    :func:`agent_grid`. ``live`` adds a green halo when the agent is executing."""
+    live_cls = " is-live" if live else ""
+    persona_html = (
+        f'<div class="helm-agent-persona">{html.escape(persona)}</div>' if persona else ""
+    )
+    pills = f'<div class="helm-agent-pills">{pills_html}</div>' if pills_html else ""
+    team_block = f'<div class="helm-agent-sep"></div>{team_html}' if team_html else ""
+    foot = ""
+    if footer_left or footer_right:
+        foot = (
+            '<div class="helm-agent-sep"></div>'
+            f'<div class="helm-agent-foot"><span>{footer_left}</span>'
+            f"<span>{footer_right}</span></div>"
+        )
+    return (
+        f'<div class="helm-agent-card{live_cls}">'
+        '<div class="helm-agent-top">'
+        f"{agent_avatar(name, backend, size=40)}"
+        '<div class="helm-agent-id">'
+        f'<div class="helm-agent-name">{html.escape(name)}</div>'
+        f'<div class="helm-agent-meta">{html.escape(backend or "—")}</div>'
+        f"{pills}</div></div>"
+        f"{persona_html}{team_block}{foot}</div>"
+    )
+
+
+def agent_grid(cards: list[str], *, cols: int = 3) -> None:
+    """Render agent roster cards in a responsive equal-width grid."""
+    st.markdown(
+        f'<div class="helm-agent-grid" style="--cols:{cols}">{"".join(cards)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 # ── duotone, theme-matched icon set (inline SVG; no emoji font needed) ──
 # Lucide-style line glyphs. Rendered in light-indigo on the indigo-tinted chip
 # (.helm-kpi-ic) — two theme tones, identical on every browser/OS.
@@ -613,6 +763,7 @@ def page_header(
 __all__ = [
     "apply_theme", "enable_smooth_scroll", "page_header", "pill", "user_chip",
     "kpi_card", "kpi_grid", "CHART",
+    "agent_avatar", "agent_card", "agent_grid", "team_chip", "BACKEND_PALETTE",
     "BG", "SURFACE", "SURFACE_2", "BORDER", "TEXT", "TEXT_MUTED", "TEXT_FAINT",
     "PRIMARY", "ACCENT", "POS", "NEG", "WARN", "INFO",
 ]

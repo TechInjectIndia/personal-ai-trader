@@ -17,6 +17,7 @@ to wrap via CSS, hence this helper.
 
 from __future__ import annotations
 
+import html
 import re
 import uuid
 from datetime import datetime, time
@@ -63,6 +64,52 @@ def fmt_clock(dt: datetime | None = None) -> str:
 def fmt_window(t: time) -> str:
     """Time-of-day for trading-window labels (TRADING_START / END / SQUARE_OFF_AT)."""
     return t.strftime(_WINDOW_FMT)
+
+
+def paginate(
+    items: "list",
+    *,
+    key: str,
+    per_page: int = 20,
+    label: str = "items",
+) -> "list":
+    """Render Prev / Next controls + a page indicator and return the current
+    page's slice of ``items``.
+
+    Streamlit renders every widget in the script on each run, so a long list of
+    heavy widgets (expanders, cards) is what makes a page lag — paginating the
+    *render* (not just the query) is the fix. ``key`` must be unique per call
+    site; the current page lives in ``st.session_state[f"_pg_{key}"]`` so it
+    survives reruns. When everything fits on one page the controls are hidden.
+    """
+    total = len(items)
+    if total <= per_page:
+        return list(items)
+
+    pages = (total + per_page - 1) // per_page
+    state_key = f"_pg_{key}"
+    page = int(st.session_state.get(state_key, 1))
+    page = min(max(page, 1), pages)
+
+    prev_col, mid_col, next_col = st.columns([1, 2, 1])
+    if prev_col.button("← Prev", key=f"{key}_prev", disabled=page <= 1,
+                       use_container_width=True):
+        page -= 1
+    if next_col.button("Next →", key=f"{key}_next", disabled=page >= pages,
+                       use_container_width=True):
+        page += 1
+    page = min(max(page, 1), pages)
+    st.session_state[state_key] = page
+
+    start = (page - 1) * per_page
+    end = min(start + per_page, total)
+    mid_col.markdown(
+        f'<div style="text-align:center;color:#94A2B8;font-size:0.82rem;'
+        f'padding-top:0.45rem;">Page <b style="color:#E6EDF3">{page}</b> / {pages}'
+        f" · {start + 1}–{end} of {total} {html.escape(label)}</div>",
+        unsafe_allow_html=True,
+    )
+    return list(items[start:end])
 
 
 _WRAP_TABLE_CSS = """
