@@ -23,6 +23,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from helm.dashboard.agents import HOUSE_ID, agent_label, agent_selectbox, scope_predicate
 from helm.dashboard.format import IST, fmt_clock, fmt_ist, wrapped_table
 from helm.dashboard.theme import apply_theme, page_header
 from helm.data.store import conn
@@ -58,8 +59,11 @@ def badge(label: str) -> str:
     )
 
 
-# ───────────────────────── filters ─────────────────────────
+# ───────────────────────── agent + date/kind/verdict filters ─────────────────────────
 today = date.today()
+agent_sel, _agent_names = agent_selectbox(default=HOUSE_ID, key="retros_agent")
+st.caption(f"Showing retrospectives for **{agent_label(agent_sel, _agent_names)}**.")
+
 fc1, fc2, fc3, fc4 = st.columns([1, 1, 1, 2])
 date_from = fc1.date_input("From", today - timedelta(days=14))
 date_to = fc2.date_input("To", today)
@@ -78,12 +82,17 @@ if date_from > date_to:
 
 # ───────────────────────── fetch ─────────────────────────
 @st.cache_data(ttl=30, show_spinner=False)
-def fetch_retros(date_from: date, date_to: date,
-                 kind: str, verdicts: tuple[str, ...]) -> list[dict]:
-    clauses = ["r.created_ts >= %s", "r.created_ts < %s"]
+def fetch_retros(
+    date_from: date, date_to: date,
+    kind: str, verdicts: tuple[str, ...],
+    agent: str,
+) -> list[dict]:
+    agent_pred, agent_params = scope_predicate(agent, alias="r")
+    clauses = ["r.created_ts >= %s", "r.created_ts < %s", agent_pred]
     args: list = [
         datetime.combine(date_from, datetime.min.time(), tzinfo=IST),
         datetime.combine(date_to + timedelta(days=1), datetime.min.time(), tzinfo=IST),
+        *agent_params,
     ]
     if kind != "All":
         clauses.append("r.kind = %s")
@@ -114,7 +123,7 @@ def fetch_retros(date_from: date, date_to: date,
 
 
 retros = fetch_retros(
-    date_from, date_to, kind_filter, tuple(verdict_filter),
+    date_from, date_to, kind_filter, tuple(verdict_filter), agent_sel,
 )
 
 
