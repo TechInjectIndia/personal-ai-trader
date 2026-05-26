@@ -318,7 +318,11 @@ def _adapter_openrouter(system: str, user: str, *, model: str, schema: dict,
     exhausted the API returns HTTP 429, whose body trips the competition quota
     subsystem's rate-limit detector (`quota.note_error`) so the backend
     auto-pauses and resumes next window. Output is parsed tolerantly — the
-    caller fail-closes on any unparseable byte."""
+    caller fail-closes on any unparseable byte.
+
+    `response_format={"type":"json_object"}` is passed so providers that support
+    it (most chat-completions backends do) constrain the model to emit valid
+    JSON instead of chain-of-thought prose; providers that don't ignore it."""
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise LLMError("OPENROUTER_API_KEY not set (required for OpenRouter backends)")
@@ -330,6 +334,7 @@ def _adapter_openrouter(system: str, user: str, *, model: str, schema: dict,
         "model": model,
         "temperature": 0,
         "max_tokens": OPENROUTER_MAX_TOKENS,
+        "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": system + GENERIC_CLI_RULES_SUFFIX},
             {"role": "user", "content": user},
