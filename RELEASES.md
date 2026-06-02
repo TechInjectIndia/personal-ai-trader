@@ -154,3 +154,13 @@ append near anchor in scripts/decide_signals.py
 scripts/decide_signals.py | 2 ++
  1 file changed, 2 insertions(+)
 ```
+
+## release 117 · 94ad0660d6 · 2026-06-02 22:20 IST
+
+append near anchor in scripts/decide_signals.py
+
+```
+RELEASES.md               | 9 +++++++++
+ scripts/decide_signals.py | 2 ++
+ 2 files changed, 11 insertions(+)
+```

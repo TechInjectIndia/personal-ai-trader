@@ -64,6 +64,10 @@ class OpeningRangeBreakout(Strategy):
         stop = or_low
         target = entry + RR_MULTIPLIER * or_width
 
+        if (or_high - or_low) / or_high < 0.008:
+
+            return None  # filter: min-or-width-pct
+
         return Signal(
             strategy=self.name,
             symbol=symbol,
