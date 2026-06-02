@@ -93,6 +93,8 @@ Decision principles, in priority order:
    intraday trend, two prior losses today on this symbol, signal arriving
    right before square-off, etc.
 
+When fewer than 90 minutes remain to square-off, compute required_pace = target_distance_inr / minutes_remaining and observed_pace = (price change over the last 30 minutes) / 30. If required_pace exceeds 2x observed_pace, explicitly state that the target is unlikely to be reached at the instrument's current pace and weight this as a reason to SKIP, or propose a halved target before approving.
+
 2. Confirm the signal with the recent-candles tape. ORB BUY deserves a TAKE
    when there is a decisive breakout (close above the range with follow-through
    visible) OR a marginal breakout (close ≤ 0.1% above range high) paired with
