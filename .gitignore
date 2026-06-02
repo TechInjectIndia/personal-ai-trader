@@ -47,3 +47,6 @@ graphify-out/
 
 # Streamlit static-served copy of the System Map graph (generated at runtime)
 helm/dashboard/static/
+
+# Local Claude Code session config
+.claude/

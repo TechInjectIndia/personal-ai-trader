@@ -254,3 +254,12 @@ DECIDER_MODEL_DEFAULT = "claude-sonnet-4-6"
 DECIDER_MAX_TOKENS = 800
 DECIDER_TEMPERATURE = 0.0       # deterministic-ish; we want the same call to repeat
 DECIDER_RECENT_BARS = 30        # how many recent 1-min bars to send to the model
+
+# --- PM planning brain (weekly review + backlog drain) ---
+# The PM does the genuinely hard, low-frequency JUDGMENT in the self-improvement
+# loop: reasoning over the whole open-proposal backlog (retro history, engineer
+# runs) to screen redundant restatements and decide accept/supersede/reject.
+# That screening runs on Opus 4.8. The BUILDER (Engineer) and the trade decider
+# stay on cheap Sonnet 4.6 — execution and per-trade TAKE/SKIP don't need
+# Opus-grade reasoning and fire far more often. Override via AGENT_MODEL env var.
+AGENT_MODEL_DEFAULT = "claude-opus-4-8"

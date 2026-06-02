@@ -22,6 +22,7 @@ The engineer NEVER pushes to a remote; ``git_commit_all`` is local only.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -112,6 +113,23 @@ def _read(path: Path) -> str:
 
 
 def _write(path: Path, text: str) -> None:
+    """Persist ``text`` to ``path``, but never leave a broken ``.py`` on disk.
+
+    Anchor-based edits can occasionally splice prose into the wrong place
+    (an LLM-suggested anchor lands mid-expression), producing a file that no
+    longer parses. We validate ``.py`` payloads with ``ast.parse`` *before*
+    touching disk so a malformed edit raises here and the mutator dispatch
+    turns it into a clean task failure — instead of corrupting a live source
+    file and breaking the running bot until the next revert.
+    """
+    if path.suffix == ".py":
+        try:
+            ast.parse(text)
+        except SyntaxError as exc:
+            raise ValueError(
+                f"refusing to write syntactically-invalid Python to {path.name}: "
+                f"{exc.msg} (line {exc.lineno})"
+            ) from exc
     path.write_text(text, encoding="utf-8")
 
 
@@ -718,6 +736,9 @@ def _llm_pick_anchor(rel: str, text: str, spec: dict) -> str | None:
     """One LLM call: pick a substring of `text` present EXACTLY ONCE, near where
     the intended change belongs. Returns None on any failure (caller then lets
     the deterministic mutator fail as before)."""
+    # Engineer = the BUILDER. Execution stays on cheap Sonnet 4.6 (the PM does
+    # the Opus-grade screening/planning upstream; the Engineer just applies the
+    # already-decided change). See AGENT_MODEL_DEFAULT note in config.py.
     model = os.environ.get("DECIDER_MODEL", DECIDER_MODEL_DEFAULT)
     mode = os.environ.get("LLM_MODE", "cli")
     intent = spec.get("text") or spec.get("replacement") or ""
@@ -776,7 +797,13 @@ def apply_mutator(task_type: str, spec: dict) -> MutatorResult:
     if fn is None:
         return MutatorResult(False, f"no mutator for {task_type!r}",
                              error=f"unsupported task_type {task_type}")
-    return fn(spec)
+    try:
+        return fn(spec)
+    except ValueError as exc:
+        # `_write` raises ValueError on a syntactically-invalid `.py` payload
+        # (and the mutators raise it on bad spec values). Surface as a clean
+        # task failure rather than letting a half-applied edit escape.
+        return MutatorResult(False, "mutator raised", error=str(exc))
 
 
 # ─── gates ────────────────────────────────────────────────────────────
@@ -808,12 +835,17 @@ def _restore_tree(files: list[str] | None = None) -> None:
 
 # ─── main loop ────────────────────────────────────────────────────────
 
-def process_one_task() -> dict | None:
+def process_one_task(only_task_id: int | None = None) -> dict | None:
     """Claim, mutate, gate, commit, release. Returns a summary dict or None.
 
     None means: nothing claimed (either no open tasks for us, or backpressure
     from too many unverified releases). Otherwise the caller gets a dict with
     enough context to print a one-liner.
+
+    `only_task_id` pins the claim to exactly that task — production callers omit
+    it (claim the next open task); tests pass their own seeded id so the shared
+    live queue can never poison a test run (which previously let pytest mutate
+    live strategy files via an unrelated real task).
     """
     # Backpressure check BEFORE we claim — saves a needless claim/unclaim if
     # the tester is behind. Gate on BOTH pending code releases AND pending
@@ -825,11 +857,12 @@ def process_one_task() -> dict | None:
         return None
 
     with record_run("engineer", "process_one_task") as run:
-        return _process_one_task_inner(run)
+        return _process_one_task_inner(run, only_task_id)
 
 
-def _process_one_task_inner(run: RunHandle) -> dict | None:
-    task = claim_next_task(claimed_by="engineer-agent", allow_types=ALLOWED_TYPES)
+def _process_one_task_inner(run: RunHandle, only_task_id: int | None = None) -> dict | None:
+    task = claim_next_task(claimed_by="engineer-agent", allow_types=ALLOWED_TYPES,
+                           only_task_id=only_task_id)
     if not task:
         run.outcome = "noop"
         run.summary = "no tasks to claim"

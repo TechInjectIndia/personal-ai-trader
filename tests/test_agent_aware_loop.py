@@ -150,7 +150,7 @@ def test_persona_edit_creates_config_version_no_release(
         competitor_id=cid,
     )
 
-    result = eng_mod.process_one_task()
+    result = eng_mod.process_one_task(only_task_id=task_id)
     assert result is not None, "engineer claimed nothing"
     assert result["ok"] is True, result
     assert result["task_id"] == task_id

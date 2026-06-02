@@ -161,21 +161,29 @@ def create_task(*, created_by: str, title: str, rationale: str,
 
 
 def claim_next_task(*, claimed_by: str, allow_types: set[str] | None = None,
+                    only_task_id: int | None = None,
                     ) -> dict | None:
     """Atomically pick the highest-priority open task and move it to in_progress.
 
     Optional `allow_types` restricts to a subset (e.g. Engineer skips
-    `needs_human`). Returns None if nothing to do.
+    `needs_human`). Optional `only_task_id` pins the claim to exactly that task
+    (still requires it to be `open` + an allowed type) — this is what lets a
+    test drive the engineer against ITS OWN seeded task instead of whatever
+    happens to top the shared live queue. Returns None if nothing to do.
     """
     type_filter = ""
     args: list = []
     if allow_types:
         type_filter = " AND task_type = ANY(%s)"
         args.append(list(allow_types))
+    id_filter = ""
+    if only_task_id is not None:
+        id_filter = " AND id = %s"
+        args.append(only_task_id)
     sql = (
         "WITH next AS ("
         "  SELECT id FROM agent_tasks "
-        "  WHERE status = 'open'" + type_filter + " "
+        "  WHERE status = 'open'" + type_filter + id_filter + " "
         "  ORDER BY priority DESC, created_ts ASC "
         "  FOR UPDATE SKIP LOCKED "
         "  LIMIT 1"

@@ -41,7 +41,7 @@ from helm.agents.base import (
     unverified_config_versions,
     unverified_releases,
 )
-from helm.config import DECIDER_MODEL_DEFAULT, HOUSE_COMPETITOR_ID, HOUSE_TRADE_FILTER
+from helm.config import AGENT_MODEL_DEFAULT, HOUSE_COMPETITOR_ID, HOUSE_TRADE_FILTER
 from helm.data.store import conn, insert_audit
 from helm.llm import LLMError, complete_json
 
@@ -790,7 +790,7 @@ def run_weekly_review(*, model: str | None = None, mode: str | None = None,
     call, and `agent_runs` row. A failure in one agent's LLM call propagates
     (the cron log surfaces it) — but the per-agent rows already written stand.
     """
-    model = model or os.environ.get("DECIDER_MODEL", DECIDER_MODEL_DEFAULT)
+    model = model or os.environ.get("AGENT_MODEL", AGENT_MODEL_DEFAULT)
     mode = (mode or os.environ.get("LLM_MODE", "cli")).strip().lower()
 
     if competitor_id is not None:
@@ -1067,7 +1067,7 @@ def run_backlog_drain(competitor_id: str, *, model: str | None = None,
     """
     from helm.agents.backlog import batch_open_proposals
 
-    model = model or os.environ.get("DECIDER_MODEL", DECIDER_MODEL_DEFAULT)
+    model = model or os.environ.get("AGENT_MODEL", AGENT_MODEL_DEFAULT)
     mode = (mode or os.environ.get("LLM_MODE", "cli")).strip().lower()
     # `max_clusters` doubles as the accept cap here (kept to the 0–3 shape so the
     # Engineer isn't flooded). supersede / reject are NOT capped.

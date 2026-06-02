@@ -80,6 +80,48 @@ def test_prompt_tweak_append(tmp_repo: Path) -> None:
     assert idx_new < idx_p2
 
 
+def test_write_rejects_invalid_python_and_leaves_file_untouched(tmp_repo: Path) -> None:
+    """The syntax guard must refuse a broken `.py` write *before* touching disk.
+
+    This is the corruption backstop: an anchor edit that splices prose into the
+    middle of an expression used to land on a live strategy file and break the
+    running bot until the next revert. `_write` now ast.parse-validates `.py`
+    payloads and raises, so the original file content survives intact.
+    """
+    target = tmp_repo / "scripts" / "decide_signals.py"
+    good = "X = 1\n"
+    _write(target, good)
+
+    with pytest.raises(ValueError, match="syntactically-invalid Python"):
+        engineer._write(target, "X = 1 +\nthis is bare prose, not code\n")
+
+    # Disk still holds the original, valid content.
+    assert target.read_text() == good
+
+
+def test_bug_fix_with_syntax_breaking_replacement_fails_cleanly(tmp_repo: Path) -> None:
+    """A bug_fix replacement that produces invalid Python → clean task failure.
+
+    apply_mutator() catches the ValueError from `_write` and returns a
+    not-ok MutatorResult instead of letting a half-applied edit escape. The
+    original file must be unchanged.
+    """
+    target = tmp_repo / "scripts" / "decide_signals.py"
+    original = "THRESHOLD = 10\n"
+    _write(target, original)
+
+    spec = {
+        "file": "scripts/decide_signals.py",
+        "anchor": "THRESHOLD = 10",
+        # Unbalanced paren → SyntaxError when the file is re-parsed.
+        "replacement": "THRESHOLD = (10",
+    }
+    res = engineer.apply_mutator("bug_fix", spec)
+    assert res.ok is False
+    assert "invalid Python" in (res.error or "")
+    assert target.read_text() == original
+
+
 def test_prompt_tweak_replace(tmp_repo: Path) -> None:
     target = tmp_repo / "scripts" / "decide_signals.py"
     _write(target, PROMPT_FILE_BODY)

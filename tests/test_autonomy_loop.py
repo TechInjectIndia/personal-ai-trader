@@ -196,7 +196,18 @@ def test_pm_engineer_tester_round_trip(monkeypatch, _isolate_synthetic_rows):
     monkeypatch.setattr(eng_mod, "pm2_reload",
                         lambda app="helm-dashboard": None, raising=False)
 
-    eng_result = eng_mod.process_one_task()
+    # Neutralise live-DB backpressure: process_one_task() bails to None when the
+    # real queue has ≥2 unverified releases/config versions. This test owns its
+    # own seeded task, so pin both to empty to stay hermetic.
+    monkeypatch.setattr(eng_mod, "unverified_releases", lambda: [], raising=True)
+    monkeypatch.setattr(eng_mod, "unverified_config_versions",
+                        lambda *a, **kw: [], raising=True)
+    # record_release() appends to the real RELEASES.md as a side effect; stub
+    # that out so the test never mutates the live release log on disk.
+    monkeypatch.setattr(base, "_append_releases_md", lambda *a, **kw: None,
+                        raising=True)
+
+    eng_result = eng_mod.process_one_task(only_task_id=task_id)
     assert eng_result is not None, "Engineer found no task to claim"
     assert eng_result.get("ok") is True, f"Engineer task did not complete: {eng_result}"
     release_id = eng_result["release_id"]
