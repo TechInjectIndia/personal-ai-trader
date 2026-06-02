@@ -135,3 +135,13 @@ add_filter range-floor-pre-breach (post) to orb_5m
 helm/strategies/intraday/orb.py | 4 ++++
  1 file changed, 4 insertions(+)
 ```
+
+## release 91 · 5d51d1bb5e · 2026-06-02 22:15 IST
+
+append near anchor in scripts/decide_signals.py
+
+```
+RELEASES.md               | 9 +++++++++
+ scripts/decide_signals.py | 2 ++
+ 2 files changed, 11 insertions(+)
+```

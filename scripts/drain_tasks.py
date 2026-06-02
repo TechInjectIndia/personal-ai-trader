@@ -111,20 +111,32 @@ def main() -> int:
                       f"({open_now} open left)")
                 break
 
-            # 1. Tester first — clear release/config backpressure.
-            verified = process_unverified()
-            cfg_verified = process_unverified_config()
+            # One iteration's agent calls are wrapped so a single task's
+            # unexpected error (e.g. a tool missing from PATH) is logged and
+            # counted as no-progress rather than aborting the whole drain. A
+            # systemic outage then trips the stall guard after STALL_LIMIT
+            # iterations instead of spinning to the cap.
+            try:
+                # 1. Tester first — clear release/config backpressure.
+                verified = process_unverified()
+                cfg_verified = process_unverified_config()
 
-            # 2. Engineer ships the next task.
-            eng = process_one_task()
-            if eng is None:
-                eng_state = "no-claim"
-            elif eng.get("ok"):
-                eng_state = f"done(task={eng.get('task_id')})"
-                shipped += 1
-            else:
-                eng_state = f"failed(task={eng.get('task_id')}: {eng.get('reason')})"
+                # 2. Engineer ships the next task.
+                eng = process_one_task()
+                if eng is None:
+                    eng_state = "no-claim"
+                elif eng.get("ok"):
+                    eng_state = f"done(task={eng.get('task_id')})"
+                    shipped += 1
+                else:
+                    eng_state = f"failed(task={eng.get('task_id')}: {eng.get('reason')})"
+                    failed += 1
+            except Exception as exc:  # noqa: BLE001 — keep draining past one bad task
+                verified = cfg_verified = 0
+                eng = None
+                eng_state = f"iter-error: {exc}"
                 failed += 1
+                print(f"[drain-tasks] iter {i} raised: {exc}", file=sys.stderr)
 
             print(f"[drain-tasks] iter {i}: open={open_now} "
                   f"tester[rel={verified} cfg={cfg_verified}] "
