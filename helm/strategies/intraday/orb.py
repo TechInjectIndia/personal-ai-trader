@@ -68,6 +68,10 @@ class OpeningRangeBreakout(Strategy):
 
             return None  # filter: min-or-width-pct
 
+        if max(c['high'] for c in candles[:-1]) > or_high and latest_close < or_high + (or_high - or_low):
+
+            return None  # filter: failed-retest-above-range
+
         return Signal(
             strategy=self.name,
             symbol=symbol,

@@ -164,3 +164,13 @@ RELEASES.md               | 9 +++++++++
  scripts/decide_signals.py | 2 ++
  2 files changed, 11 insertions(+)
 ```
+
+## release 122 · 62b13c0dd2 · 2026-06-02 22:20 IST
+
+add_filter min-or-width-pct (post) to orb_15m
+
+```
+RELEASES.md                     | 10 ++++++++++
+ helm/strategies/intraday/orb.py |  4 ++++
+ 2 files changed, 14 insertions(+)
+```
