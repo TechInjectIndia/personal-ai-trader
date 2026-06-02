@@ -102,6 +102,8 @@ Decision principles, in priority order:
    VWAP reclaim only if the dip and reclaim are visible. Gap-fade only if
    price already showed momentum back toward yesterday's close.
 
+Hard floor: if the computed reward-to-risk ratio is below 1.5, output SKIP unconditionally. Momentum quality, clean price action, low noise, risk-state cleanliness, or any other qualitative observation must not override this floor.
+
 3. A few-paise dip on the bar AFTER the trigger is noise, not a failure
    signal. Compare the dip's magnitude to the stop distance: if the dip is a
    small fraction of the distance to stop, ignore it. Only treat post-trigger
