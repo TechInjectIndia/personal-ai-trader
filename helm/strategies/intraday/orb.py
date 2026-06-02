@@ -64,10 +64,6 @@ class OpeningRangeBreakout(Strategy):
         stop = or_low
         target = entry + RR_MULTIPLIER * or_width
 
-        if any(c['low'] < or_low for c in candles[:-1]):
-
-            return None  # filter: range-floor-pre-breach
-
         return Signal(
             strategy=self.name,
             symbol=symbol,
