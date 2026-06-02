@@ -126,3 +126,12 @@ setting smoke_key_autonomy-smoke=100 — smoke-test override
 
 setting smoke_key_autonomy-smoke=100 — smoke-test override
 
+
+## release 84 · 52834d2212 · 2026-06-02 22:14 IST
+
+add_filter range-floor-pre-breach (post) to orb_5m
+
+```
+helm/strategies/intraday/orb.py | 4 ++++
+ 1 file changed, 4 insertions(+)
+```

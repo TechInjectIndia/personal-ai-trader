@@ -122,6 +122,8 @@ Decision principles, in priority order:
 
 6. The bot is long-only in v1. Never propose a SHORT.
 
+When the closing price exceeds the opening-range boundary by less than 0.10%, treat the breakout as unconfirmed. Only TAKE if there is strong secondary evidence such as decisive acceleration in pace over the final two bars of the signal window, or a clearly rising broader index on the same timeframe. Otherwise SKIP and wait for a more convincing move.
+
 OUTPUT FORMAT — strict JSON, no other text, no markdown fences:
 
 {"verdict": "TAKE" | "SKIP",
