@@ -26,12 +26,13 @@ def _print_leaderboard() -> None:
     rows = leaderboard()
     print(f"\n=== Leaderboard (week of {current_week_start():%Y-%m-%d}) ===")
     print(f"{'#':>2}  {'competitor':<18} {'backend':<9} {'equity':>10} "
-          f"{'P&L':>9} {'prog%':>7} {'open':>4} {'trades':>6} {'win%':>5}")
+          f"{'P&L':>9} {'prog%':>7} {'open':>4} {'trades':>6} {'win%':>5} {'E2C':>5}")
     for r in rows:
         win = f"{r.win_rate_pct:.0f}" if r.win_rate_pct is not None else "-"
+        e2c = f"{r.e2c}" if r.e2c is not None else "-"
         print(f"{r.rank:>2}  {r.competitor_id:<18} {r.backend:<9} "
               f"{float(r.equity):>10,.0f} {float(r.realised_net_pnl):>+9,.0f} "
-              f"{r.progress_pct:>+7.1f} {r.open_positions:>4} {r.trades:>6} {win:>5}")
+              f"{r.progress_pct:>+7.1f} {r.open_positions:>4} {r.trades:>6} {win:>5} {e2c:>5}")
 
 
 def _print_mandates() -> None:

@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from helm.analytics.economics import book_economics
 from helm.competition.backend import call_backend
 from helm.competition.competitors import Competitor
 from helm.config import TRADABLE_UNIVERSE, WATCHLIST
@@ -90,18 +92,42 @@ def next_week_start() -> date:
     return current_week_start() + timedelta(days=7)
 
 
+def _economics_advisory(competitor_id: str) -> tuple[dict, str]:
+    """F8: the competitor's OWN recent unit economics + an advisory string when
+    its edge-to-cost is too thin. Advice only — the agent still chooses freely
+    (league autonomy). Never raises; returns ({}, "") if analytics are unavailable."""
+    try:
+        econ = book_economics(competitor_filter=competitor_id, last_n=30)
+    except Exception:
+        return {}, ""
+    advisory = ""
+    if econ.n >= 10 and econ.realised_e2c < Decimal("3"):
+        advisory = (
+            "\n\nADVISORY — from YOUR OWN last-30-trade results (guidance, not a "
+            f"rule; trade your edge): edge-to-cost {econ.realised_e2c} (<3) and cost "
+            f"drag {econ.cost_drag_pct}% mean your moves were too small to clear "
+            "the ~Rs13/trade round-trip cost. Net was a loser even when gross was "
+            "flat. Consider higher-conviction, larger-move setups (fewer trades, "
+            "wider targets) this week."
+        )
+    return econ.as_dict(), advisory
+
+
 def _build_user_prompt(competitor: Competitor, wk_start: date | None = None) -> str:
+    econ, advisory = _economics_advisory(competitor.id)
     snapshot = {
         "now_ist": datetime.now(IST).strftime("%Y-%m-%d %H:%M"),
         "week_start": (wk_start or current_week_start()).isoformat(),
         "max_symbols": MAX_MANDATE_SYMBOLS,
         "candidate_universe": list(TRADABLE_UNIVERSE),
+        "your_recent_economics_last_30": econ,
     }
     return (
         "Plan your mandate for the week. Here is the candidate universe you may "
         "pick from and the week context.\n\n```json\n"
         + json.dumps(snapshot, indent=2, default=str)
         + "\n```"
+        + advisory
     )
 
 

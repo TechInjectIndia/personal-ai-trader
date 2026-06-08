@@ -24,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
+from helm.analytics.economics import book_economics
 from helm.config import HOUSE_COMPETITOR_ID, HOUSE_TRADE_FILTER
 from helm.data.store import conn
 
@@ -49,6 +50,10 @@ class LeaderRow:
     progress_pct: float
     drawdown_pct: float
     rank: int = 0
+    # F8: unit-economics visibility (the cost lever). None if analytics unavailable.
+    e2c: Decimal | None = None
+    cost_drag_pct: Decimal | None = None
+    gross_expectancy: Decimal | None = None
 
 
 def _book_filter(competitor_id: str) -> tuple[str, tuple]:
@@ -112,6 +117,11 @@ def leaderboard() -> list[LeaderRow]:
                 pct = float((equity - initial) / initial * 100)
             else:
                 pct = 0.0
+            try:
+                econ = book_economics(competitor_filter=r["id"])
+                e2c, drag, gexp = econ.realised_e2c, econ.cost_drag_pct, econ.gross_expectancy
+            except Exception:
+                e2c = drag = gexp = None
             rows.append(LeaderRow(
                 competitor_id=r["id"], name=r["name"] or r["id"],
                 backend=r["backend"] or "", model=r["model"],
@@ -121,6 +131,7 @@ def leaderboard() -> list[LeaderRow]:
                 trades=trades, wins=wins, losses=int(s["losses"]),
                 win_rate_pct=win_rate, progress_pct=pct,
                 drawdown_pct=min(0.0, pct),
+                e2c=e2c, cost_drag_pct=drag, gross_expectancy=gexp,
             ))
 
     rows.sort(key=lambda x: x.equity, reverse=True)
