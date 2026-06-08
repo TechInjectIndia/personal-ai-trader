@@ -30,7 +30,7 @@ durable signals to Postgres already (audit/decisions/etc.) — the digest reads 
 | F2 min-edge gate (`MIN_EDGE_TO_COST=3`) | 2026-06-08 | blocks sub-cost scalps, lifts net expectancy | blocks the right trades **without** starving the book (trades/day not ~0) | every session | 🟡 watching |
 | F4 bigger-move reframe (`MIN_TARGET_PCT=0.6%`) | 2026-06-08 | bigger targets raise E2C & restore payoff (momentum only) | realised E2C ≥ 3 on house book; net expectancy ↑ | every session + weekly | 🟡 watching |
 | F5 confidence↔outcome | measure 2026-06-08 | decider confidence predicts win | monotone: higher conf bucket → higher win%/net. **Gates** building conviction sizing | every session | 🟡 measuring (early +) |
-| F6 multi-timeframe (`_5m` variants) | 2026-06-08 | 5-min bars capture bigger moves vs the same fixed cost | `_5m` variants show higher E2C / better net than their 1-min twin | every session + weekly | 🟡 watching (0 trades yet) |
+| F6 multi-timeframe (`_5m` variants) | 2026-06-08 | 5-min bars capture bigger moves vs the same fixed cost | `_5m` variants show higher E2C / better net than their 1-min twin | every session + weekly | 🟡 watching (0 trades yet); **A/B unblocked — risk-keying ON 2026-06-08** |
 | F7 Context Engine (microservice) | 2026-06-08 | external news/event context lifts decision quality where the chart can't | claude-full beats claude-blind: positive gross expectancy + E2C≥3 on context-fed decisions | weekly (after shadow) | 🟡 built, OFF by default (shadow) |
 | Daily post-close cadence | 2026-06-08 | daily loop iterates safely overnight | ≥1 pm/eng/tester run per trading day; no overnight regression survives to open | every session | 🟡 watching |
 
@@ -101,7 +101,7 @@ These mechanisms are shipped, tested, and inert until their flag flips. **Toggle
 | F5 conviction sizing | `CONVICTION_SIZING_ENABLED` | 🔴 NO-GO — code correct, but it's a DATA gate | conf↔outcome holds over ≥50 closed TAKEs (digest "F5 gate"); still n≈24, +0.28 |
 | F7-P3c context signals | `CONTEXT_SIGNALS_ENABLED` | n/a (needs engine first) | engine shadow-validated: context score predicts next move |
 | F7 engine consumption | `CONTEXT_ENGINE_URL` (.env) | n/a | ready to start claude-blind vs claude-full A/B (after ≥2wk shadow) |
-| Per-(symbol,strategy) slots | `HOUSE_STRATEGY_KEYED_SLOTS` | 🟢 enable-ready — per-symbol cap added (`MAX_OPEN_POSITIONS_PER_SYMBOL=2`) | whenever you want the clean multi-timeframe A/B (exposure now bounded 2/symbol) |
+| Per-(symbol,strategy) slots | `HOUSE_STRATEGY_KEYED_SLOTS` | 🟢 ENABLED 2026-06-08 (per-symbol cap `MAX_OPEN_POSITIONS_PER_SYMBOL=2`) | ✅ ON — watch: each symbol ≤2 concurrent; 1m vs 5m variants now both trade (clean A/B). Revert: set flag False in Settings |
 | F8 mandate advisory | _(live; advice-only)_ | — | competitors see their own E2C in the weekly mandate prompt |
 
 _Review (ec406cd): the resolver was hardened to fail-safe (malformed settings → code default, never raises on the trade path) — a latent live bug, now fixed. F5 remains a data gate (do NOT flip yet). Risk-keying is now safe to enable (per-symbol cap caps correlated pile-up)._
