@@ -28,8 +28,8 @@ durable signals to Postgres already (audit/decisions/etc.) — the digest reads 
 | `bbands_zscore_20` strategy | 2026-06-08 | mean-reversion has positive edge where ORB fails | gross expectancy > 0 **and** E2C ≥ 3 over ≥20 trades; beats ORB | every session + weekly | 🟡 watching (0 trades yet) |
 | #681 stop lock-in (breakeven + EOD tighten) | 2026-06-08 | locks give-back without clipping winners | house EOD/STOP net ↑ vs baseline; not stopping out trending winners early | every session + weekly | 🟡 watching |
 | F2 min-edge gate (`MIN_EDGE_TO_COST=3`) | 2026-06-08 | blocks sub-cost scalps, lifts net expectancy | blocks the right trades **without** starving the book (trades/day not ~0) | every session | 🟡 watching |
-| F4 bigger-move reframe (`MIN_TARGET_PCT`) | _pending Phase 2a_ | bigger targets raise E2C & restore payoff | realised E2C ≥ 3 on house book; net expectancy ↑ | every session + weekly | ⏳ landing |
-| F5 confidence↔outcome | measure 2026-06-08 | decider confidence predicts win | monotone: higher conf bucket → higher win%/net. **Gates** building conviction sizing | every session | 🟡 measuring |
+| F4 bigger-move reframe (`MIN_TARGET_PCT=0.6%`) | 2026-06-08 | bigger targets raise E2C & restore payoff (momentum only) | realised E2C ≥ 3 on house book; net expectancy ↑ | every session + weekly | 🟡 watching |
+| F5 confidence↔outcome | measure 2026-06-08 | decider confidence predicts win | monotone: higher conf bucket → higher win%/net. **Gates** building conviction sizing | every session | 🟡 measuring (early +) |
 | Daily post-close cadence | 2026-06-08 | daily loop iterates safely overnight | ≥1 pm/eng/tester run per trading day; no overnight regression survives to open | every session | 🟡 watching |
 
 Legend: 🟡 watching · ⏳ landing · 🟢 graduated (proven) · 🔴 reverted/killed · 🔧 tuned.
@@ -54,14 +54,17 @@ Legend: 🟡 watching · ⏳ landing · 🟢 graduated (proven) · 🔴 reverted
 - **Observations:** _(none yet)_
 
 ### F4 bigger-move reframe
-- **How to check:** digest "F4 bigger-move" block — avg target distance % per strategy should rise toward ≥0.6%. Then watch E2C on the per-strategy block.
-- **Decide:** confirm targets widened/reversion-dropped as designed; tune `MIN_TARGET_PCT`.
-- **Observations:** _(pending Phase 2a landing)_
+- **How to check:** digest "F4 bigger-move" block — avg target distance % per momentum strategy should sit ≥0.6%. Then watch E2C on the per-strategy block.
+- **Design note:** floor applies to MOMENTUM only (ORB/VWAP/gap_fade widen up to the floor). **Mean-reversion is EXEMPT** (`MEANREV_WIDEN_OR_DROP="none"`) — its target IS the mean, so a floor would near-disable bbands; its cost discipline is the F2 E2C gate. `"drop"`/`"widen"` are opt-in experiments. Also lowered `max_signals_per_symbol_per_day` 5→2. (`per_symbol_cooldown_min` 30→45 is currently inert — not wired in risk.evaluate.)
+- **Decide:** tune `MIN_TARGET_PCT`; if the book starves, raise the signal cap back.
+- **Observations:**
+  - 2026-06-08 — shipped. Reversion exempted after adversarial review found the 0.6% floor near-disabled bbands under real large-cap σ (gutting the A/B) and regressed 2 tests; fixed + re-tested both modes.
 
 ### F5 confidence↔outcome (measurement only — sizing NOT built)
 - **How to check:** digest "F5 gate" block — win%/net by confidence bucket. We need a **monotone** relationship before building conviction sizing.
 - **Decide:** if higher conf → better outcome holds over ≥50 TAKEs, build F5 conviction sizing; if flat/noisy, do NOT build it (confidence is uncalibrated).
-- **Observations:** _(none yet — needs trade volume)_
+- **Observations:**
+  - 2026-06-08 — measurement shipped (read-only; sizing NOT built). First reading: n=24 conf-tagged closed TAKEs, Pearson **+0.28**, win% climbs 17%→36%→**75%** across bands. Promising monotonicity but far below the ≥50-trade bar — keep watching, do NOT build sizing yet.
 
 ### Daily post-close cadence
 - **How to check:** digest "cadence" block — pm/engineer/tester runs per day; cross-ref releases verified vs reverted.

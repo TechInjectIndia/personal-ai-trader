@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 from helm.charges import round_trip_breakdown
 from helm.config import MIN_EDGE_TO_COST, dynamic_position_cap, live_risk_limits
 from helm.data.store import conn, first_candle_open_at_or_after, insert_audit
+from helm.instrument import log_event
 from helm.orchestrator import risk
 from helm.wallet import wallet_state
 
@@ -126,6 +127,9 @@ def execute_signal(
             # guaranteed net loser even if right. Skip via the shared SKIP tail.
             # (target=None signals can't be E2C-evaluated → fall through.)
             allowed, reason = False, f"below_min_edge_to_cost (E2C={e2c:.2f})"
+            log_event("f2_min_edge_gate", "blocked", signal_id=sig["id"],
+                      symbol=sig["symbol"], qty=sized_qty, entry=entry,
+                      target=target, e2c=e2c, min_required=MIN_EDGE_TO_COST)
         else:
             allowed, reason = risk.evaluate(sig["symbol"], sig["side"], sized_qty, entry)
 
