@@ -41,6 +41,7 @@ from helm.agents.base import (
     unverified_config_versions,
     unverified_releases,
 )
+from helm.analytics.economics import book_economics
 from helm.config import AGENT_MODEL_DEFAULT, HOUSE_COMPETITOR_ID, HOUSE_TRADE_FILTER
 from helm.data.store import conn, insert_audit
 from helm.llm import LLMError, complete_json
@@ -486,6 +487,12 @@ def _build_user_prompt(agent: dict, goal: GoalBrief, proposals: list[dict],
     valid_types = list(
         HOUSE_ENGINEER_TASK_TYPES if is_house else FREESTYLE_ENGINEER_TASK_TYPES
     ) + ["needs_human"]
+    # F1: this agent's own unit economics so the PM targets the real lever
+    # (costs, not just net). Read-only; never break the run if analytics fail.
+    try:
+        econ = book_economics(competitor_filter=agent["id"], last_n=30).as_dict()
+    except Exception:
+        econ = {}
     payload = {
         "now_ist": datetime.now(IST).strftime("%Y-%m-%d %H:%M"),
         "agent": agent,
@@ -494,6 +501,7 @@ def _build_user_prompt(agent: dict, goal: GoalBrief, proposals: list[dict],
         "open_proposals_last_30d": proposals,
         "recent_retros_last_7d": retros,
         "recent_engineer_runs": engineer_runs,
+        "unit_economics_last_30d": econ,
         "notes": (
             "You are reviewing ONE agent (see `agent`). "
             + ("This is the HOUSE agent — it edits the shared codebase; use "
@@ -503,6 +511,10 @@ def _build_user_prompt(agent: dict, goal: GoalBrief, proposals: list[dict],
             + " recurrence = how many open proposals share the same loose "
             "title cluster. That is the single strongest signal — quote it in "
             "your rationale. Queue 0–3 tasks. Empty is fine if nothing recurs."
+            + " `unit_economics_last_30d` shows this agent's gross vs cost vs "
+            "net and its edge-to-cost ratio (E2C): if E2C < ~3 the real problem "
+            "is that moves are too small relative to ~₹13/trade cost — prefer "
+            "changes that capture bigger moves / trade less over win-rate tweaks."
         ),
     }
     return (

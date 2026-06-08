@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import argparse
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from helm.analytics.economics import book_economics
 from helm.data.store import conn
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -194,7 +196,36 @@ def build_report(sunday: date) -> str:
                 f"{r['exit_reason']} {r['n']} (₹{r['net']})" for r in ex))
             w("")
 
+        _unit_economics_section(w)
+
     return "\n".join(L)
+
+
+def _unit_economics_section(w) -> None:
+    """F1: gross vs cost vs net, and the edge-to-cost ratio that governs
+    profitability — the number the loop optimizes against. E2C < ~3 means the
+    fixed per-trade cost is collapsing the payoff."""
+    w("## Unit economics — gross vs cost (the profitability lever)")
+    w("")
+    overall = book_economics()
+    w(f"**Overall** ({overall.n} trades): gross ₹{overall.gross_pnl} − costs "
+      f"₹{overall.charges} = **net ₹{overall.net_pnl}** · "
+      f"net expectancy ₹{overall.net_expectancy}/trade · "
+      f"**E2C {overall.realised_e2c}** (target ≥3) · cost-drag {overall.cost_drag_pct}%")
+    w("")
+    for label, key in (("By strategy", "strategy"), ("By agent", "competitor_id")):
+        rows = book_economics(group_by=key)
+        if not rows:
+            continue
+        w(f"**{label}:**")
+        w("")
+        w("| " + key + " | n | gross ₹ | cost ₹ | net ₹ | E2C | gross payoff |")
+        w("|---|---|---|---|---|---|---|")
+        for name, e in sorted(rows.items(), key=lambda kv: kv[1].net_pnl):
+            flag = "🔴" if e.realised_e2c < Decimal("3") else "🟢"
+            w(f"| {name} | {e.n} | {e.gross_pnl} | {e.charges} | {e.net_pnl} "
+              f"| {flag} {e.realised_e2c} | {e.gross_payoff} |")
+        w("")
 
 
 def _count(c, table, start, end, extra="", col="created_ts") -> int:
