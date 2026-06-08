@@ -173,3 +173,160 @@ def book_economics(
             sql = f"SELECT {_AGG} FROM paper_trades pt WHERE {base_where}"
             row = c.execute(sql, tuple(params)).fetchone()
         return _row_to_econ(row or _EMPTY_ROW)
+
+
+# ── F5 measurement gate: decider confidence ↔ trade outcome (READ-ONLY) ──────
+# The FRD (docs/frd/F5-conviction-weighted-sizing.md §7) gates conviction *scaling*
+# on first *measuring* whether confidence predicts outcome. Confidence is NOT a
+# column; the decider tags it into decisions.reasoning as `conf=0.NN`
+# (scripts/decide_signals.py:298 — `[{source} {mode}/{model} conf={confidence:.2f}]`).
+# We parse it back out and correlate against realised net P&L of the trade it opened.
+
+# Postgres-side parse of the `conf=0.NN` tag (always 2 decimals via `:.2f`).
+_CONF_EXPR = "(substring(d.reasoning from 'conf=([0-9]\\.[0-9]+)'))::numeric"
+
+# Fixed confidence bands anchored on the FRD's CONVICTION_FLOOR=0.55 (§4).
+# (low, high] half-open on the right; first band is closed on the left at 0.
+_CONF_BANDS: tuple[tuple[str, Decimal, Decimal], ...] = (
+    ("<0.55", Decimal("0.00"), Decimal("0.55")),
+    ("0.55–0.65", Decimal("0.55"), Decimal("0.65")),
+    ("0.65–0.75", Decimal("0.65"), Decimal("0.75")),
+    ("0.75–0.85", Decimal("0.75"), Decimal("0.85")),
+    ("≥0.85", Decimal("0.85"), Decimal("1.01")),
+)
+
+
+@dataclass(frozen=True)
+class ConfBucket:
+    band: str
+    lo: Decimal
+    hi: Decimal
+    n: int
+    win_pct: Decimal        # net winners / n * 100
+    net_expectancy: Decimal  # sum(net_pnl) / n
+    net_pnl: Decimal         # sum(net_pnl)
+
+    def as_dict(self) -> dict[str, str | int]:
+        return {
+            "band": self.band,
+            "lo": str(self.lo),
+            "hi": str(self.hi),
+            "n": self.n,
+            "win_pct": str(self.win_pct),
+            "net_expectancy": str(self.net_expectancy),
+            "net_pnl": str(self.net_pnl),
+        }
+
+
+@dataclass(frozen=True)
+class ConfidenceOutcome:
+    n: int                       # total CLOSED TAKE trades carrying a conf tag
+    corr: Decimal | None         # Pearson corr(conf, net_pnl_inr); None if undefined
+    buckets: tuple[ConfBucket, ...]
+    verdict: str                 # plain-English read of the gate
+
+    def as_dict(self) -> dict:
+        return {
+            "n": self.n,
+            "corr": (str(self.corr) if self.corr is not None else None),
+            "verdict": self.verdict,
+            "buckets": [b.as_dict() for b in self.buckets],
+        }
+
+
+def _conf_verdict(n: int, corr: Decimal | None, buckets: tuple[ConfBucket, ...]) -> str:
+    """Translate the correlation sign + sample size into an F5 go/no-go read.
+
+    Deliberately conservative: thin data (the live book has ~50 conf-tagged closed
+    TAKEs) makes any single correlation noisy, so we never green-light scaling on
+    weak/ambiguous evidence."""
+    if n < 20 or corr is None:
+        return (f"insufficient data (n={n}) — keep measuring, do NOT enable "
+                "conviction scaling yet")
+    if corr >= Decimal("0.15"):
+        return (f"conf↔net corr = +{corr} → positive: higher confidence tends to "
+                "win more; F5 scaling looks justified (confirm on more data)")
+    if corr <= Decimal("-0.15"):
+        return (f"conf↔net corr = {corr} → negative: confidence is anti-predictive; "
+                "do NOT enable scaling")
+    return (f"conf↔net corr = {corr} → ~0: no reliable signal; do NOT enable scaling")
+
+
+def confidence_outcome_correlation(
+    *,
+    competitor_filter: str | None = None,
+    since: datetime | None = None,
+) -> ConfidenceOutcome:
+    """Measure decider confidence vs realised outcome over CLOSED TAKE trades.
+
+    READ-ONLY. Parses the `conf=0.NN` tag the decider writes into
+    decisions.reasoning, joins to the paper_trades row that TAKE opened, and
+    reports per-confidence-band n / win% / net expectancy plus a Pearson
+    correlation sign between confidence and net P&L. This is the F5 measurement
+    gate: scaling is only justified if the correlation is real and positive.
+
+    - competitor_filter: a competitor_id; the house id expands to HOUSE_TRADE_FILTER.
+    - since: only trades with exit_ts >= since.
+    """
+    where = [
+        "pt.status = 'CLOSED'",
+        "d.verdict = 'TAKE'",
+        _TEST_PREDICATE,
+        f"{_CONF_EXPR} IS NOT NULL",
+    ]
+    params: list = []
+    comp_sql, comp_params = _competitor_clause(competitor_filter)
+    base_where = " AND ".join(where) + comp_sql
+    params.extend(comp_params)
+    if since is not None:
+        base_where += " AND pt.exit_ts >= %s"
+        params.append(since)
+
+    # INNER JOIN: we require both the conf tag (decisions) and an outcome
+    # (paper_trades). Blocked/SKIP TAKEs never inserted a trade row, so they
+    # drop out naturally and correctly (no outcome to measure).
+    joins = "JOIN decisions d ON d.id = pt.decision_id"
+
+    band_cases = " ".join(
+        f"WHEN {_CONF_EXPR} > {lo} AND {_CONF_EXPR} <= {hi} THEN '{band}'"
+        if i > 0 else
+        f"WHEN {_CONF_EXPR} >= {lo} AND {_CONF_EXPR} <= {hi} THEN '{band}'"
+        for i, (band, lo, hi) in enumerate(_CONF_BANDS)
+    )
+    band_expr = f"CASE {band_cases} END"
+
+    sql = (
+        f"SELECT {band_expr} AS band, count(*) n, "
+        f"sum((pt.net_pnl_inr > 0)::int) net_wins, "
+        f"sum(pt.net_pnl_inr) net "
+        f"FROM paper_trades pt {joins} WHERE {base_where} GROUP BY band"
+    )
+    corr_sql = (
+        f"SELECT count(*) n, corr({_CONF_EXPR}, pt.net_pnl_inr) corr "
+        f"FROM paper_trades pt {joins} WHERE {base_where}"
+    )
+
+    with conn() as c:
+        rows = c.execute(sql, tuple(params)).fetchall()
+        crow = c.execute(corr_sql, tuple(params)).fetchone() or {"n": 0, "corr": None}
+
+    by_band = {r["band"]: r for r in rows}
+    buckets: list[ConfBucket] = []
+    for band, lo, hi in _CONF_BANDS:
+        r = by_band.get(band)
+        n = (r["n"] if r else 0) or 0
+        nd = Decimal(n) if n else _Z
+        net = (r["net"] if r else None) or _Z
+        wins = (r["net_wins"] if r else 0) or 0
+        buckets.append(ConfBucket(
+            band=band, lo=lo, hi=hi, n=n,
+            win_pct=_quant(_ratio(Decimal(wins), nd) * 100),
+            net_expectancy=_quant(_ratio(net, nd)),
+            net_pnl=_quant(net),
+        ))
+
+    total_n = crow["n"] or 0
+    corr_raw = crow["corr"]
+    corr = _quant(Decimal(str(corr_raw))) if corr_raw is not None else None
+    verdict = _conf_verdict(total_n, corr, tuple(buckets))
+    return ConfidenceOutcome(n=total_n, corr=corr, buckets=tuple(buckets), verdict=verdict)

@@ -21,7 +21,7 @@ from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from helm.analytics.economics import book_economics
+from helm.analytics.economics import book_economics, confidence_outcome_correlation
 from helm.data.store import conn
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -197,6 +197,7 @@ def build_report(sunday: date) -> str:
             w("")
 
         _unit_economics_section(w)
+        _confidence_calibration_section(w)
 
     return "\n".join(L)
 
@@ -226,6 +227,31 @@ def _unit_economics_section(w) -> None:
             w(f"| {name} | {e.n} | {e.gross_pnl} | {e.charges} | {e.net_pnl} "
               f"| {flag} {e.realised_e2c} | {e.gross_payoff} |")
         w("")
+
+
+def _confidence_calibration_section(w) -> None:
+    """F5 measurement gate: does higher decider confidence => better outcome?
+    Read-only. Buckets CLOSED TAKE trades by the `conf=0.NN` the decider tagged
+    into decisions.reasoning and correlates it with net P&L. Scaling is only
+    justified if the signal is real and positive (FRD §7)."""
+    co = confidence_outcome_correlation()
+    w("## Confidence calibration — does conviction predict outcome? (F5 gate)")
+    w("")
+    if co.n == 0:
+        w("> No CLOSED TAKE trades carry a `conf=` tag yet — nothing to measure.")
+        w("")
+        return
+    w("| Confidence band | n | win % | net expectancy ₹ |")
+    w("|---|---|---|---|")
+    for b in co.buckets:
+        if b.n == 0:
+            w(f"| {b.band} | 0 | — | — |")
+        else:
+            flag = "🟢" if b.net_expectancy > 0 else "🔴"
+            w(f"| {b.band} | {b.n} | {b.win_pct}% | {flag} {b.net_expectancy} |")
+    w("")
+    w(f"**Verdict:** {co.verdict}")
+    w("")
 
 
 def _count(c, table, start, end, extra="", col="created_ts") -> int:
