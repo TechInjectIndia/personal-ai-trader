@@ -49,10 +49,10 @@ def build_report(sunday: date) -> str:
     L: list[str] = []
     w = L.append
 
-    w(f"# Weekend self-improvement loop — {sunday:%A %d %b %Y}")
+    w(f"# Self-improvement loop — {sunday:%A %d %b %Y}")
     w("")
     w(f"_Generated {datetime.now(IST):%Y-%m-%d %H:%M IST} from Postgres. "
-      "One file per weekend in `logs/weekend-reports/`._")
+      "One file per loop-day in `logs/weekend-reports/` (post-close daily + weekly summary)._")
     w("")
 
     with conn() as c:
@@ -207,14 +207,19 @@ def _count(c, table, start, end, extra="", col="created_ts") -> int:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--date", help="Sunday to report on (YYYY-MM-DD). "
-                    "Default: most recent Sunday.")
+    ap.add_argument("--date", help="Day to report on (YYYY-MM-DD). "
+                    "Default: today (the day the post-close loop ran).")
+    ap.add_argument("--weekly", action="store_true",
+                    help="Report on the most recent Sunday instead of today "
+                         "(the cumulative week-in-review summary).")
     args = ap.parse_args()
 
     if args.date:
         sunday = date.fromisoformat(args.date)
-    else:
+    elif args.weekly:
         sunday = most_recent_sunday(datetime.now(IST).date())
+    else:
+        sunday = datetime.now(IST).date()
 
     report = build_report(sunday)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
