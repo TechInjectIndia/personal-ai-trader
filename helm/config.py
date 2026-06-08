@@ -77,8 +77,8 @@ class RiskLimits:
     max_open_positions: int = 5
     max_position_inr: Decimal = Decimal("15000")   # base notional cap per trade
     daily_loss_kill_inr: Decimal = Decimal("1000") # kill switch trips here (paper)
-    per_symbol_cooldown_min: int = 45              # no re-entry on same symbol (F4: raised 30->45)
-    max_signals_per_symbol_per_day: int = 2        # F4: fewer, bigger-move entries (was 5)
+    per_symbol_cooldown_min: int = 45              # re-entry cooldown, NOW ENFORCED in risk.evaluate (2026-06-08)
+    max_signals_per_symbol_per_day: int = 3        # F4 fewer entries (was 5→2); rebalanced to 3 now cooldown also throttles
 
 
 # --- Dynamic position-sizing ladder ---

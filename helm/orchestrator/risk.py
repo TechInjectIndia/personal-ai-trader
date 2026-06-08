@@ -125,6 +125,23 @@ def signals_for_symbol_today(symbol: str, competitor_id: str | None = None) -> i
     return int(row["n"])
 
 
+def minutes_since_last_exit(symbol: str, competitor_id: str | None = None) -> Decimal | None:
+    """Minutes since this book last CLOSED a trade in `symbol`, or None if it
+    never has. Powers the per-symbol re-entry cooldown (rate-limits churn that
+    racks up round-trip costs)."""
+    frag, params = _scope(competitor_id)
+    with conn() as c:
+        row = c.execute(
+            f"""
+            SELECT EXTRACT(EPOCH FROM (now() - MAX(exit_ts))) / 60.0 AS mins
+            FROM paper_trades
+            WHERE status = 'CLOSED' AND symbol = %s AND exit_ts IS NOT NULL{frag}
+            """,
+            (symbol, *params),
+        ).fetchone()
+    return Decimal(str(row["mins"])) if row and row["mins"] is not None else None
+
+
 def evaluate(
     symbol: str,
     side: str,
@@ -155,6 +172,16 @@ def evaluate(
 
     if signals_for_symbol_today(symbol, competitor_id) >= limits.max_signals_per_symbol_per_day:
         return False, f"already traded {symbol} max times today"
+
+    # Per-symbol re-entry cooldown: after a trade closes, wait before re-entering
+    # the same name. Rate-limits churn that compounds round-trip costs (the cost
+    # thesis). 0 disables. (Previously defined but unenforced — wired 2026-06-08.)
+    cooldown = limits.per_symbol_cooldown_min
+    if cooldown > 0:
+        since = minutes_since_last_exit(symbol, competitor_id)
+        if since is not None and since < cooldown:
+            return False, (f"{symbol} in cooldown "
+                           f"({since:.0f}/{cooldown} min since last exit)")
 
     # The per-trade cap scales with realised pnl (see dynamic_position_cap),
     # so we recompute the effective ceiling here rather than using the raw

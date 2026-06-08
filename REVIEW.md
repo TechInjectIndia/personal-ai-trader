@@ -55,7 +55,7 @@ Legend: 🟡 watching · ⏳ landing · 🟢 graduated (proven) · 🔴 reverted
 
 ### F4 bigger-move reframe
 - **How to check:** digest "F4 bigger-move" block — avg target distance % per momentum strategy should sit ≥0.6%. Then watch E2C on the per-strategy block.
-- **Design note:** floor applies to MOMENTUM only (ORB/VWAP/gap_fade widen up to the floor). **Mean-reversion is EXEMPT** (`MEANREV_WIDEN_OR_DROP="none"`) — its target IS the mean, so a floor would near-disable bbands; its cost discipline is the F2 E2C gate. `"drop"`/`"widen"` are opt-in experiments. Also lowered `max_signals_per_symbol_per_day` 5→2. (`per_symbol_cooldown_min` 30→45 is currently inert — not wired in risk.evaluate.)
+- **Design note:** floor applies to MOMENTUM only (ORB/VWAP/gap_fade widen up to the floor). **Mean-reversion is EXEMPT** (`MEANREV_WIDEN_OR_DROP="none"`) — its target IS the mean, so a floor would near-disable bbands; its cost discipline is the F2 E2C gate. `"drop"`/`"widen"` are opt-in experiments. Throttle: `max_signals_per_symbol_per_day` 5→2→**3** (rebalanced), and `per_symbol_cooldown_min`=45 is **NOW ENFORCED** in `risk.evaluate` (was inert; wired 2026-06-08 via `minutes_since_last_exit`).
 - **Decide:** tune `MIN_TARGET_PCT`; if the book starves, raise the signal cap back.
 - **Observations:**
   - 2026-06-08 — shipped. Reversion exempted after adversarial review found the 0.6% floor near-disabled bbands under real large-cap σ (gutting the A/B) and regressed 2 tests; fixed + re-tested both modes.
