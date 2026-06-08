@@ -77,8 +77,8 @@ class RiskLimits:
     max_open_positions: int = 5
     max_position_inr: Decimal = Decimal("15000")   # base notional cap per trade
     daily_loss_kill_inr: Decimal = Decimal("1000") # kill switch trips here (paper)
-    per_symbol_cooldown_min: int = 30              # no re-entry on same symbol
-    max_signals_per_symbol_per_day: int = 5
+    per_symbol_cooldown_min: int = 45              # no re-entry on same symbol (F4: raised 30->45)
+    max_signals_per_symbol_per_day: int = 2        # F4: fewer, bigger-move entries (was 5)
 
 
 # --- Dynamic position-sizing ladder ---
@@ -117,6 +117,24 @@ EXIT_TIME_DECAY_MAX_LOCK: Decimal = Decimal("0.80")   # near 15:15, lock up to 8
 # (E2C = |target-entry|*qty / round_trip_breakdown.total). Code-only Decimal,
 # same idiom as DYNAMIC_CAP_*/EXIT_*. Set to Decimal("0") to disable (kill switch).
 MIN_EDGE_TO_COST: Decimal = Decimal("3.0")
+
+
+# --- Bigger-move reframe (F4) ---
+# Strategies scalp ~0.25% moves where a fixed ~Rs13 round-trip cost eats ~43% of
+# the gross. Floor every emitted Signal's target at >= MIN_TARGET_PCT of the entry
+# price so each trade aims at a materially bigger move (paired with the lower
+# signal caps above for fewer, higher-quality entries). Momentum/reclaim
+# strategies WIDEN their natural target up to this floor; mean-reversion DROPS the
+# signal when its mean target sits inside the floor (widening past the mean breaks
+# the reversion thesis). Code-only Decimal, same idiom as MIN_EDGE_TO_COST. Set to
+# Decimal("0") to disable (revert).
+MIN_TARGET_PCT: Decimal = Decimal("0.006")   # >= 0.6% gross target move on entry
+# Mean-reversion F4 policy. Default "none": EXEMPT reversion from the target
+# floor — its target IS the mean (can't aim bigger without breaking the thesis),
+# and a 0.6% floor near-disables it on low-vol large caps (it would gut the
+# bbands A/B). Reversion's cost discipline is the F2 E2C gate at execution.
+# "drop" (skip sub-floor signals) / "widen" (past the mean) are opt-in experiments.
+MEANREV_WIDEN_OR_DROP: str = "none"          # "none" | "drop" | "widen"
 
 
 def dynamic_position_cap(realised_pnl_inr: Decimal, base_cap_inr: Decimal) -> Decimal:

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from helm.config import MIN_TARGET_PCT
+from helm.strategies._moves import enforce_min_move
 from helm.strategies.base import Signal, Strategy
 
 MIN_BARS = 10
@@ -80,7 +82,11 @@ class VWAPReclaim(Strategy):
             return None  # malformed; skip
 
         risk = latest_close - stop
-        target = latest_close + RR_MULTIPLIER * risk
+        # Natural 1.5x-risk target, floored at MIN_TARGET_PCT (F4). Stop unchanged,
+        # so any widening only raises realized RR above the 1.5 floor.
+        target = enforce_min_move(
+            latest_close, latest_close + RR_MULTIPLIER * risk, "BUY", MIN_TARGET_PCT
+        )
 
         return Signal(
             strategy=self.name,

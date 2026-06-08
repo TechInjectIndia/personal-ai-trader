@@ -20,6 +20,8 @@ from __future__ import annotations
 from datetime import time
 from decimal import Decimal
 
+from helm.config import MIN_TARGET_PCT
+from helm.strategies._moves import enforce_min_move
 from helm.strategies.base import Signal, Strategy
 
 MARKET_OPEN = time(9, 15)
@@ -62,7 +64,9 @@ class OpeningRangeBreakout(Strategy):
 
         entry = latest_close
         stop = or_low
-        target = entry + RR_MULTIPLIER * or_width
+        # Natural target = entry + 1.5x OR width; floor it at MIN_TARGET_PCT (F4).
+        # Widening only raises reward (stop unchanged), so RR stays >= the natural.
+        target = enforce_min_move(entry, entry + RR_MULTIPLIER * or_width, "BUY", MIN_TARGET_PCT)
 
         if (or_high - or_low) / or_high < 0.008:
 

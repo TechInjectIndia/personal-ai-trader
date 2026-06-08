@@ -29,6 +29,8 @@ from functools import lru_cache
 
 import yfinance as yf
 
+from helm.config import MIN_TARGET_PCT
+from helm.strategies._moves import enforce_min_move
 from helm.strategies.base import Signal, Strategy
 
 GAP_THRESHOLD_PCT = Decimal("0.50")     # 0.5% gap-down to qualify
@@ -84,7 +86,11 @@ class GapFade(Strategy):
             return None
 
         risk = latest_close - stop
-        target = latest_close + RR_MULTIPLIER * risk
+        # Natural 1.5x-risk target, floored at MIN_TARGET_PCT (F4). Stop unchanged,
+        # so any widening only raises realized RR above the 1.5 floor.
+        target = enforce_min_move(
+            latest_close, latest_close + RR_MULTIPLIER * risk, "BUY", MIN_TARGET_PCT
+        )
 
         return Signal(
             strategy=self.name,

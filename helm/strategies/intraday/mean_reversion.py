@@ -36,6 +36,8 @@ from datetime import time
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+from helm.config import MEANREV_WIDEN_OR_DROP, MIN_TARGET_PCT
+from helm.strategies._moves import enforce_min_move
 from helm.strategies.base import Signal, Strategy
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -136,6 +138,20 @@ class MeanReversion(Strategy):
         target = mean_latest
         if target <= entry:
             return None
+
+        # Bigger-move floor (F4): the natural target IS the mean — widening past it
+        # breaks the reversion thesis, and a 0.6% floor would near-disable this
+        # strategy on low-vol large caps (gutting the A/B). So mean-reversion is
+        # EXEMPT from the F4 target floor by default (MEANREV_WIDEN_OR_DROP="none");
+        # its cost discipline is the F2 E2C gate at execution, not a target floor.
+        # "widen"/"drop" remain available via config for deliberate experiments.
+        if MIN_TARGET_PCT > 0 and MEANREV_WIDEN_OR_DROP in ("widen", "drop"):
+            floored = enforce_min_move(entry, target, "BUY", MIN_TARGET_PCT)
+            if floored > target:
+                if MEANREV_WIDEN_OR_DROP == "widen":
+                    target = floored
+                else:
+                    return None
 
         # RR floor: widen target if the natural reward-to-risk falls short.
         risk = entry - stop
