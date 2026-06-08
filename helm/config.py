@@ -137,6 +137,18 @@ MIN_TARGET_PCT: Decimal = Decimal("0.006")   # >= 0.6% gross target move on entr
 MEANREV_WIDEN_OR_DROP: str = "none"          # "none" | "drop" | "widen"
 
 
+# --- Conviction-weighted sizing (F5) — FLAG-GATED, default OFF ---
+# Scale per-trade notional by the decider's confidence and skip sub-floor
+# convictions. SHIPPED OFF: the conf-vs-outcome correlation is only ~+0.28 at
+# n=24 (see scripts/review_digest.py "F5 gate"); enabling sizing on an
+# uncalibrated signal just adds variance. Flip CONVICTION_SIZING_ENABLED=True
+# only once the correlation holds over >=50 closed TAKEs. When False (or when no
+# confidence is supplied), execute_signal sizes EXACTLY as today.
+CONVICTION_SIZING_ENABLED: bool = False
+CONVICTION_FLOOR: Decimal = Decimal("0.55")        # skip TAKEs below this confidence
+CONVICTION_SIZE_MIN_MULT: Decimal = Decimal("0.5") # cap multiple at the floor; ramps to 1.0 at conf=1
+
+
 def dynamic_position_cap(realised_pnl_inr: Decimal, base_cap_inr: Decimal) -> Decimal:
     """Per-trade notional cap, scaled by realised profit.
 

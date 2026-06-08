@@ -26,7 +26,14 @@ from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 from helm.charges import round_trip_breakdown
-from helm.config import MIN_EDGE_TO_COST, dynamic_position_cap, live_risk_limits
+from helm.config import (
+    CONVICTION_FLOOR,
+    CONVICTION_SIZE_MIN_MULT,
+    CONVICTION_SIZING_ENABLED,
+    MIN_EDGE_TO_COST,
+    dynamic_position_cap,
+    live_risk_limits,
+)
 from helm.data.store import conn, first_candle_open_at_or_after, insert_audit
 from helm.instrument import log_event
 from helm.orchestrator import risk
@@ -53,11 +60,23 @@ def _edge_to_cost(side: str, qty: int, entry: Decimal, target: Decimal) -> Decim
     return (gross_reward / exp_cost) if exp_cost > 0 else Decimal("0")
 
 
+def _conviction_mult(conviction: Decimal) -> Decimal:
+    """F5: linear cap multiplier ramping from CONVICTION_SIZE_MIN_MULT at the
+    floor to 1.0 at conviction=1.0, clamped. Only used when sizing is enabled."""
+    span = Decimal("1") - CONVICTION_FLOOR
+    if span <= 0:
+        return Decimal("1")
+    m = (CONVICTION_SIZE_MIN_MULT
+         + (Decimal("1") - CONVICTION_SIZE_MIN_MULT) * (conviction - CONVICTION_FLOOR) / span)
+    return max(CONVICTION_SIZE_MIN_MULT, min(Decimal("1"), m))
+
+
 def execute_signal(
     signal_id: int,
     actor: str,
     qty: int | None = None,
     reasoning: str = "",
+    conviction: Decimal | None = None,
 ) -> ExecutionResult:
     """Apply the risk gate and book a paper trade if allowed.
 
@@ -106,6 +125,16 @@ def execute_signal(
         wallet = wallet_state()
         base_cap = live_risk_limits().max_position_inr
         effective_cap = dynamic_position_cap(wallet.realised_net_pnl, base_cap)
+        # F5 (flag-gated, default OFF): conviction-weighted sizing on the
+        # auto-sized path. When enabled with a supplied confidence, scale the cap
+        # by conviction and skip sub-floor convictions. OFF / no conviction /
+        # explicit qty => byte-identical to today.
+        conviction_block = False
+        if CONVICTION_SIZING_ENABLED and conviction is not None and qty is None:
+            if conviction < CONVICTION_FLOOR:
+                conviction_block = True
+            else:
+                effective_cap = effective_cap * _conviction_mult(conviction)
         budget = min(effective_cap, wallet.available)
         if qty is None:
             sized_qty = int(budget // entry) if budget >= entry else 0
@@ -113,7 +142,11 @@ def execute_signal(
             sized_qty = qty
 
         target = sig["target"]
-        if sized_qty <= 0:
+        if conviction_block:
+            allowed, reason = False, (
+                f"low_conviction (conf={conviction:.2f} < floor {CONVICTION_FLOOR})"
+            )
+        elif sized_qty <= 0:
             # Wallet can't afford even a single share. Skip cleanly so the
             # signal still gets a decision row and is marked consumed.
             allowed, reason = False, (

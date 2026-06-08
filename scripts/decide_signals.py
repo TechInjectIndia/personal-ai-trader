@@ -40,6 +40,7 @@ import json
 import os
 import sys
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -310,7 +311,8 @@ def decide_signal_inline(
 
     tag = f"[{source} {mode}/{model} conf={confidence:.2f}] {reasoning}"
     if verdict == "TAKE":
-        res = execute_signal(sig["id"], actor=source, qty=None, reasoning=tag)
+        res = execute_signal(sig["id"], actor=source, qty=None, reasoning=tag,
+                             conviction=Decimal(str(confidence)))
         insert_audit(source, "decision",
                      {"signal_id": sig["id"], "verdict": "TAKE", "ok": res.ok,
                       "message": res.message, "confidence": confidence})
