@@ -80,8 +80,8 @@ Weekly (Sunday) retains only: competition **mandate revision** (`plan_mandates -
 ---
 
 ## 6. FRD index
-- [F1 — Cost & gross-expectancy analytics](../frd/F1-cost-gross-analytics.md)
-- [F2 — Cost-aware minimum-edge gate](../frd/F2-cost-aware-min-edge-gate.md)
+- [F1 — Cost & gross-expectancy analytics](../frd/F1-cost-gross-analytics.md) ✅ shipped (1d35c77)
+- [F2 — Cost-aware minimum-edge gate](../frd/F2-cost-aware-min-edge-gate.md) ✅ shipped (9bd8031)
 - [F3 — Daily post-close cadence](../frd/F3-daily-postclose-cadence.md) ✅ shipped
 - [F4 — Bigger-move strategy reframe](../frd/F4-bigger-move-reframe.md)
 - [F5 — Conviction-weighted sizing](../frd/F5-conviction-weighted-sizing.md)
