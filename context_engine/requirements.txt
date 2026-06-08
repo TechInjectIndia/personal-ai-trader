@@ -1,0 +1,6 @@
+# Context Engine service deps (in addition to the repo's existing helm deps:
+# psycopg, yfinance, python-dotenv, anthropic/requests via helm.llm).
+# Install into the shared repo venv:  .venv/bin/pip install -r context_engine/requirements.txt
+fastapi>=0.110
+uvicorn>=0.29
+httpx>=0.27        # service tests (FastAPI TestClient) + ASGI transport

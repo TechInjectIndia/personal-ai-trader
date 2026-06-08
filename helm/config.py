@@ -302,6 +302,26 @@ DECIDER_MAX_TOKENS = 800
 DECIDER_TEMPERATURE = 0.0       # deterministic-ish; we want the same call to repeat
 DECIDER_RECENT_BARS = 30        # how many recent 1-min bars to send to the model
 
+# --- Context Engine (external conviction layer) ---
+# A decoupled FastAPI microservice (context_engine/, own PM2 process on
+# 127.0.0.1:8601) ingests/scores news per symbol and exposes GET /context/{sym}.
+# The bot consumer (helm/context_client.py, stdlib-only) reaches it over
+# localhost HTTP, fail-open and flag-gated. ONE KNOB controls live/blind:
+#   CONTEXT_ENGINE_URL — env-only (per-environment → .env), NOT housed here.
+#     UNSET (default)  => fetch returns None on line 1: no HTTP, no log, no
+#                         latency, byte-identical prompt → prompt cache preserved
+#                         (claude-blind A/B baseline, zero cost/behaviour delta).
+#     SET (e.g. http://127.0.0.1:8601) => bot fetches + injects non-stale context
+#                         (claude-full).
+# Only CONTEXT_ENGINE_TIMEOUT_S is read by the bot client; the rest are SERVICE
+# knobs (kept here per single-source-of-truth). Short timeout hard-caps added
+# latency on the inline scan→decide path; on any timeout the client fails open.
+CONTEXT_ENGINE_TIMEOUT_S: float = 1.5    # bot client HTTP timeout (seconds)
+CONTEXT_STALENESS_MIN: int = 180         # SERVICE: age beyond which score is stale
+CONTEXT_FRESHNESS_FLOOR: float = 0.05    # SERVICE: decayed |score| below → stale
+CONTEXT_INGEST_CADENCE_MIN: int = 15     # SERVICE: ingest/score cadence (minutes)
+
+
 # --- PM planning brain (weekly review + backlog drain) ---
 # The PM does the genuinely hard, low-frequency JUDGMENT in the self-improvement
 # loop: reasoning over the whole open-proposal backlog (retro history, engineer

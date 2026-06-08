@@ -31,6 +31,7 @@ durable signals to Postgres already (audit/decisions/etc.) — the digest reads 
 | F4 bigger-move reframe (`MIN_TARGET_PCT=0.6%`) | 2026-06-08 | bigger targets raise E2C & restore payoff (momentum only) | realised E2C ≥ 3 on house book; net expectancy ↑ | every session + weekly | 🟡 watching |
 | F5 confidence↔outcome | measure 2026-06-08 | decider confidence predicts win | monotone: higher conf bucket → higher win%/net. **Gates** building conviction sizing | every session | 🟡 measuring (early +) |
 | F6 multi-timeframe (`_5m` variants) | 2026-06-08 | 5-min bars capture bigger moves vs the same fixed cost | `_5m` variants show higher E2C / better net than their 1-min twin | every session + weekly | 🟡 watching (0 trades yet) |
+| F7 Context Engine (microservice) | 2026-06-08 | external news/event context lifts decision quality where the chart can't | claude-full beats claude-blind: positive gross expectancy + E2C≥3 on context-fed decisions | weekly (after shadow) | 🟡 built, OFF by default (shadow) |
 | Daily post-close cadence | 2026-06-08 | daily loop iterates safely overnight | ≥1 pm/eng/tester run per trading day; no overnight regression survives to open | every session | 🟡 watching |
 
 Legend: 🟡 watching · ⏳ landing · 🟢 graduated (proven) · 🔴 reverted/killed · 🔧 tuned.
@@ -76,6 +77,14 @@ Legend: 🟡 watching · ⏳ landing · 🟢 graduated (proven) · 🔴 reverted
 - **Decide:** if a `_5m` variant shows materially higher E2C/net than its 1-min twin over ≥20 trades, promote the timeframe; if it never fires meaningfully, drop it. Revert = remove the 3 entries from ACTIVE (one line).
 - **Observations:**
   - 2026-06-08 — shipped (resample_candles + bar_minutes-aware scan + 3 variants). 0 trades yet.
+
+### F7 Context Engine (decoupled microservice)
+- **Architecture:** standalone FastAPI service in `context_engine/` (own process, own `context_items`/`context_scores` tables, free yfinance-news source, `helm.llm` scorer with time-decay). The bot consumes via `helm/context_client.py` (stdlib HTTP) **only when `CONTEXT_ENGINE_URL` is set** — unset = byte-identical to today (clean A/B baseline), and any error/timeout/stale → fail-open (no context, never blocks a trade). Bot never imports `context_engine/`.
+- **Enable (A/B on):** start the service (`context_engine/run.sh`, needs `pip install -r context_engine/requirements.txt`), schedule `scripts/ingest_context.py` on cron, set `CONTEXT_ENGINE_URL=http://127.0.0.1:<port>` in `.env`. **Disable/revert:** unset the env var (instant).
+- **How to check:** `logs/instrumentation/context_engine.jsonl` (hit/miss/fail_open events) + the per-strategy/decider economics once shadow data exists. Run ≥2 weeks in SHADOW (ingest+score, flag OFF) and validate score-vs-next-move before trusting it to trade.
+- **Live-safety verified (2026-06-08):** flag-unset → None on first line (zero path); flag-set-but-service-dead → None in ~34ms (bounded, no raise); fail-open on non-200/timeout/garbage. Decider prompt is byte-identical when context is None.
+- **Observations:**
+  - 2026-06-08 — built (service + flag-gated fail-open consumer + ingest cron + tests). Shipped OFF. Service `/health` 200, `/context/{sym}` returns neutral/stale until ingestion runs.
 
 ### Daily post-close cadence
 - **How to check:** digest "cadence" block — pm/engineer/tester runs per day; cross-ref releases verified vs reverted.

@@ -59,6 +59,7 @@ from helm.config import (
     TRADING_START,
     live_risk_limits,
 )
+from helm.context_client import get_context
 from helm.data.store import conn, insert_audit, todays_candles
 from helm.llm import LLMError, decide as llm_decide
 from helm.orchestrator import risk
@@ -202,7 +203,8 @@ def _fetch_unconsumed(signal_id: int | None) -> list[dict]:
         return list(c.execute(sql, args))
 
 
-def _build_user_prompt(sig: dict, candles: list[dict], snapshot: dict, history: list[dict]) -> str:
+def _build_user_prompt(sig: dict, candles: list[dict], snapshot: dict, history: list[dict],
+                       *, context: dict | None = None) -> str:
     payload = {
         "signal": {
             "id": sig["id"],
@@ -221,6 +223,14 @@ def _build_user_prompt(sig: dict, candles: list[dict], snapshot: dict, history: 
         "todays_decisions": history,
         "now_ist": datetime.now(IST).strftime("%Y-%m-%d %H:%M"),
     }
+    # When context is None (flag off / stale / fetch failed) the payload dict is
+    # byte-identical to today → prompt cache + model behaviour unchanged. Only a
+    # fresh non-stale hit adds the compact CONTEXT block.
+    if context is not None:
+        payload["external_context"] = {
+            "score": context["score"],
+            "rationale": context["rationale"],
+        }
     return (
         "Decide whether to TAKE or SKIP this paper trade.\n\n"
         "```json\n" + json.dumps(payload, indent=2, default=str) + "\n```"
@@ -232,7 +242,10 @@ def _decide_one(model: str, sig: dict) -> tuple[str, str, float]:
     candles = todays_candles(sig["symbol"])
     snapshot = _risk_snapshot(sig["symbol"])
     history = _todays_decisions_summary()
-    user = _build_user_prompt(sig, candles, snapshot, history)
+    # Fail-open, flag-gated: None when CONTEXT_ENGINE_URL unset / service down /
+    # stale, in which case _build_user_prompt is byte-identical to today.
+    context = get_context(sig["symbol"], signal_id=sig["id"])
+    user = _build_user_prompt(sig, candles, snapshot, history, context=context)
 
     result = llm_decide(
         SYSTEM_PROMPT,
