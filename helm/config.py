@@ -90,6 +90,25 @@ DYNAMIC_CAP_STEP_BOOST_INR: Decimal = Decimal("1500")  # …adds ₹1.5k to the 
 DYNAMIC_CAP_HARD_MAX_INR: Decimal = Decimal("25000")   # ceiling (50% of initial)
 
 
+# --- Exit lock-in (give-back protection) ---
+# Real-trade retros (task #681) show winners repeatedly run 50-83% of the way to
+# target and then bleed back to a flat or losing EOD/STOP exit. Two stateless,
+# zero-migration levers (applied in scripts/manage_positions.py by ratcheting the
+# existing stop_loss column in place) recover most of that give-back:
+#   (A) a breakeven lock once price reaches half the entry->target distance
+#       (proposal #1062, "accepted") — covers the most then-lost trades; and
+#   (B) an end-of-day wind-down tighten that, in the final ~45 min before
+#       SQUARE_OFF_AT, ratchets the stop from breakeven toward LTP so a faded-
+#       but-still-green trade locks a STOP exit before the 15:15 flat square-off.
+# These are code-only Decimals (matching the DYNAMIC_CAP_* idiom) rather than
+# RiskLimits fields, so they need no live_risk_limits()/EDITABLE_RISK_KEYS wiring.
+# Treat the thresholds as a starting point pending forward paper validation.
+EXIT_BREAKEVEN_TRIGGER_R: Decimal = Decimal("0.50")   # lock at 50% of entry->target
+EXIT_BREAKEVEN_CUSHION_R: Decimal = Decimal("0.02")   # thin cushion above entry (post-charge buffer)
+EXIT_TIME_DECAY_START_MIN: Decimal = Decimal("45")    # begin wind-down tighten 45 min pre-square-off
+EXIT_TIME_DECAY_MAX_LOCK: Decimal = Decimal("0.80")   # near 15:15, lock up to 80% of open profit
+
+
 def dynamic_position_cap(realised_pnl_inr: Decimal, base_cap_inr: Decimal) -> Decimal:
     """Per-trade notional cap, scaled by realised profit.
 
