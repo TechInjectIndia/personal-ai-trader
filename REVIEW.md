@@ -96,13 +96,15 @@ Legend: 🟡 watching · ⏳ landing · 🟢 graduated (proven) · 🔴 reverted
 ## Built but flag-gated OFF (enable when evidence clears)
 These mechanisms are shipped, tested, and inert until their flag flips. **Toggle them live from the dashboard → ⚙️ Settings → "Feature flags"** (writes the `settings` table; the bot picks it up next cron tick, no restart). Their on/off state + per-strategy economics are visible on the **Self-Improvement** page. Check the digest before flipping.
 
-| Feature | Flag (in `helm/config.py` / `.env`) | Enable when |
-|---|---|---|
-| F5 conviction sizing | `CONVICTION_SIZING_ENABLED=True` | conf↔outcome correlation holds over ≥50 closed TAKEs (digest "F5 gate") |
-| F7-P3c context signals | `CONTEXT_SIGNALS_ENABLED=True` | engine shadow-validated: context score predicts next move |
-| F7 engine consumption | `CONTEXT_ENGINE_URL=http://127.0.0.1:8601` | ready to start the claude-blind vs claude-full A/B (after ≥2wk shadow) |
-| Per-(symbol,strategy) slots | `HOUSE_STRATEGY_KEYED_SLOTS=True` | want the clean multi-timeframe A/B (raises same-symbol concurrency — review first) |
-| F8 mandate advisory | _(live; advice-only)_ | — competitors see their own E2C in the weekly mandate prompt |
+| Feature | Flag (dashboard Settings / `.env`) | Adversarial review (2026-06-08) | Enable when |
+|---|---|---|---|
+| F5 conviction sizing | `CONVICTION_SIZING_ENABLED` | 🔴 NO-GO — code correct, but it's a DATA gate | conf↔outcome holds over ≥50 closed TAKEs (digest "F5 gate"); still n≈24, +0.28 |
+| F7-P3c context signals | `CONTEXT_SIGNALS_ENABLED` | n/a (needs engine first) | engine shadow-validated: context score predicts next move |
+| F7 engine consumption | `CONTEXT_ENGINE_URL` (.env) | n/a | ready to start claude-blind vs claude-full A/B (after ≥2wk shadow) |
+| Per-(symbol,strategy) slots | `HOUSE_STRATEGY_KEYED_SLOTS` | 🟢 enable-ready — per-symbol cap added (`MAX_OPEN_POSITIONS_PER_SYMBOL=2`) | whenever you want the clean multi-timeframe A/B (exposure now bounded 2/symbol) |
+| F8 mandate advisory | _(live; advice-only)_ | — | competitors see their own E2C in the weekly mandate prompt |
+
+_Review (ec406cd): the resolver was hardened to fail-safe (malformed settings → code default, never raises on the trade path) — a latent live bug, now fixed. F5 remains a data gate (do NOT flip yet). Risk-keying is now safe to enable (per-symbol cap caps correlated pile-up)._
 
 ## Graduated / retired
 _(empty — nothing has graduated or been killed yet)_
