@@ -1,6 +1,7 @@
 """Strategy registry."""
 
 from helm.strategies.base import Signal, Strategy
+from helm.strategies.intraday.context_momentum import ContextMomentum
 from helm.strategies.intraday.gap_fade import GapFade
 from helm.strategies.intraday.mean_reversion import MeanReversion
 from helm.strategies.intraday.orb import OpeningRangeBreakout
@@ -33,6 +34,9 @@ ACTIVE: list[Strategy] = [
     MeanReversion(bar_minutes=5),          # bbands_zscore_20_5m
     VWAPReclaim5m(),                       # vwap_reclaim_5m
     GapFade5m(),                           # gap_fade_5m
+    # F7-P3c: context-driven signals. requires_context=True → scan_signals SKIPS
+    # it unless CONTEXT_SIGNALS_ENABLED (default OFF → inert).
+    ContextMomentum(),                     # context_momentum
 ]
 
 __all__ = ["Signal", "Strategy", "ACTIVE"]

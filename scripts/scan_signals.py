@@ -22,6 +22,7 @@ import argparse
 import json
 import sys
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -30,7 +31,13 @@ from zoneinfo import ZoneInfo
 # itself does.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from helm.config import TRADING_END, TRADING_START, WATCHLIST
+from helm.config import (
+    CONTEXT_SIGNALS_ENABLED,
+    TRADING_END,
+    TRADING_START,
+    WATCHLIST,
+)
+from helm.context_client import get_context
 from helm.data.store import conn, insert_audit, resample_candles
 from helm.strategies import ACTIVE
 
@@ -79,11 +86,22 @@ def main() -> int:
     fired_summaries: list[dict] = []
     with conn() as c:
         for strat in ACTIVE:
+            # F7-P3c: context-signal strategies are SKIPPED entirely unless the
+            # flag is on → zero new behaviour/calls when off (provably inert).
+            requires_ctx = getattr(strat, "requires_context", False)
+            if requires_ctx and not CONTEXT_SIGNALS_ENABLED:
+                continue
             for symbol in WATCHLIST:
                 # Feed each strategy candles at ITS timeframe. bar_minutes<=1
                 # short-circuits to the exact 1-min path (todays_candles), so
                 # 1-min strategies are byte-identical to before.
                 candles = resample_candles(symbol, getattr(strat, "bar_minutes", 1))
+                if requires_ctx:
+                    # Resolve external context via the fail-open bot client
+                    # (None when the engine is unreachable/disabled) and inject
+                    # it; the strategy stays a pure function of (candles, context).
+                    ctx = get_context(symbol)
+                    strat.context = Decimal(str(ctx["score"])) if ctx else None
                 signal = strat.scan(symbol, candles)
                 check = {
                     "strategy": strat.name,

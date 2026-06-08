@@ -149,6 +149,16 @@ CONVICTION_FLOOR: Decimal = Decimal("0.55")        # skip TAKEs below this confi
 CONVICTION_SIZE_MIN_MULT: Decimal = Decimal("0.5") # cap multiple at the floor; ramps to 1.0 at conf=1
 
 
+# --- Context-driven signals (F7-P3c) — FLAG-GATED, default OFF ---
+# The ContextMomentum strategy emits BUY on a strong bullish external context
+# score confirmed by price. Gated SEPARATELY from the engine: even with the
+# engine ON (feeding the decider, P3b), context SIGNALS stay off until the
+# shadow data validates that scores predict moves. When False, scan_signals
+# SKIPS requires_context strategies entirely → provably inert (no calls, no firing).
+CONTEXT_SIGNALS_ENABLED: bool = False
+CONTEXT_SIGNAL_THRESHOLD: Decimal = Decimal("0.5")  # min bullish context score to fire
+
+
 def dynamic_position_cap(realised_pnl_inr: Decimal, base_cap_inr: Decimal) -> Decimal:
     """Per-trade notional cap, scaled by realised profit.
 

@@ -30,6 +30,12 @@ class Strategy(ABC):
     # larger value (e.g. 5) and scan_signals feeds them resampled N-min bars.
     bar_minutes: int = 1
 
+    # F7-P3c: a strategy that needs the external context score. scan_signals sets
+    # `self.context` (Decimal in [-1,1], or None) before calling scan(), and SKIPS
+    # such strategies entirely unless CONTEXT_SIGNALS_ENABLED. Default False keeps
+    # every other strategy a pure function of candles only (no DB/HTTP).
+    requires_context: bool = False
+
     @property
     @abstractmethod
     def name(self) -> str: ...
