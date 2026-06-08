@@ -83,8 +83,8 @@ Weekly (Sunday) retains only: competition **mandate revision** (`plan_mandates -
 - [F1 — Cost & gross-expectancy analytics](../frd/F1-cost-gross-analytics.md) ✅ shipped (1d35c77)
 - [F2 — Cost-aware minimum-edge gate](../frd/F2-cost-aware-min-edge-gate.md) ✅ shipped (9bd8031)
 - [F3 — Daily post-close cadence](../frd/F3-daily-postclose-cadence.md) ✅ shipped
-- [F4 — Bigger-move strategy reframe](../frd/F4-bigger-move-reframe.md)
-- [F5 — Conviction-weighted sizing](../frd/F5-conviction-weighted-sizing.md)
-- [F6 — Multi-timeframe A/B](../frd/F6-multi-timeframe-ab.md)
+- [F4 — Bigger-move strategy reframe](../frd/F4-bigger-move-reframe.md) ✅ shipped (837eb5b) — momentum only; mean-reversion exempt (F2 handles its cost discipline)
+- [F5 — Conviction-weighted sizing](../frd/F5-conviction-weighted-sizing.md) — ⏸ measurement shipped (385fd7f, conf↔outcome corr +0.28 @ n=24); **sizing gated** until ≥50 trades confirm
+- [F6 — Multi-timeframe A/B](../frd/F6-multi-timeframe-ab.md) — next
 - [F7 — Context Engine](../frd/F7-context-engine.md)
 - [F8 — League gross-expectancy feedback](../frd/F8-league-gross-expectancy-feedback.md)
