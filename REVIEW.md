@@ -5,6 +5,8 @@ behaviour, not unit tests. This file is the standing watch-list. Each shipped
 feature I'm skeptical of gets a row here + persistent instrumentation, and is
 reviewed on a cadence until it graduates (proven good), is tuned, or is reverted.
 
+> **📍 BASELINE RESET 2026-06-08 (20:45 IST):** all 6 books wiped to a fresh ₹50,000 (`scripts/reset_books.py`; archives `*_reset_20260608_204457`). Every metric below now measures from this clean slate under the full F1–F8 + cost-gate regime + risk-keying ON. The F5 ≥50-trade calibration counter restarts from 0. Pre-reset history is in the archive tables.
+
 ## ⭐ Session-start ritual (do this FIRST, every session in this repo)
 1. **Read this file** (REVIEW.md) — the watch-list + each feature's success criteria.
 2. **Fetch the instrumentation:** `python scripts/review_digest.py`
