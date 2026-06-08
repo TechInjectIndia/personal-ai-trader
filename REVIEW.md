@@ -94,7 +94,7 @@ Legend: 🟡 watching · ⏳ landing · 🟢 graduated (proven) · 🔴 reverted
 ---
 
 ## Built but flag-gated OFF (enable when evidence clears)
-These mechanisms are shipped, tested, and inert until their flag flips — so enabling is a one-line change with no rebuild. Check the digest each session before flipping.
+These mechanisms are shipped, tested, and inert until their flag flips. **Toggle them live from the dashboard → ⚙️ Settings → "Feature flags"** (writes the `settings` table; the bot picks it up next cron tick, no restart). Their on/off state + per-strategy economics are visible on the **Self-Improvement** page. Check the digest before flipping.
 
 | Feature | Flag (in `helm/config.py` / `.env`) | Enable when |
 |---|---|---|
