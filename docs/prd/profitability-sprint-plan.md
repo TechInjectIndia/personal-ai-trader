@@ -87,4 +87,6 @@ Weekly (Sunday) retains only: competition **mandate revision** (`plan_mandates -
 - [F5 — Conviction-weighted sizing](../frd/F5-conviction-weighted-sizing.md) — ⏸ measurement shipped (385fd7f, conf↔outcome corr +0.28 @ n=24); **sizing gated** until ≥50 trades confirm
 - [F6 — Multi-timeframe A/B](../frd/F6-multi-timeframe-ab.md) ✅ shipped (4d49573) — 5-min variants (bbands/vwap/gap_fade); A/B confound (symbol-only risk keying) logged in REVIEW.md
 - [F7 — Context Engine](../frd/F7-context-engine.md) ✅ built as decoupled microservice (2277996) — OFF by default; run shadow ≥2wk then enable the A/B via `CONTEXT_ENGINE_URL`
-- [F8 — League gross-expectancy feedback](../frd/F8-league-gross-expectancy-feedback.md) — next
+- [F8 — League gross-expectancy feedback](../frd/F8-league-gross-expectancy-feedback.md) ✅ shipped — per-agent economics in mandate prompt (advisory) + leaderboard/CLI E2C; (a) PM-prompt economics already in F1
+
+**All FRDs shipped.** Flag-gated/OFF until live data warrants: F5 conviction sizing (`CONVICTION_SIZING_ENABLED`), F7-P3c context signals (`CONTEXT_SIGNALS_ENABLED`), F7 engine consumption (`CONTEXT_ENGINE_URL`), per-(symbol,strategy) slots (`HOUSE_STRATEGY_KEYED_SLOTS`). The session-start ritual (REVIEW.md + `review_digest.py`) reports them each session; enable each as its evidence clears.

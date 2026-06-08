@@ -93,5 +93,16 @@ Legend: 🟡 watching · ⏳ landing · 🟢 graduated (proven) · 🔴 reverted
 
 ---
 
+## Built but flag-gated OFF (enable when evidence clears)
+These mechanisms are shipped, tested, and inert until their flag flips — so enabling is a one-line change with no rebuild. Check the digest each session before flipping.
+
+| Feature | Flag (in `helm/config.py` / `.env`) | Enable when |
+|---|---|---|
+| F5 conviction sizing | `CONVICTION_SIZING_ENABLED=True` | conf↔outcome correlation holds over ≥50 closed TAKEs (digest "F5 gate") |
+| F7-P3c context signals | `CONTEXT_SIGNALS_ENABLED=True` | engine shadow-validated: context score predicts next move |
+| F7 engine consumption | `CONTEXT_ENGINE_URL=http://127.0.0.1:8601` | ready to start the claude-blind vs claude-full A/B (after ≥2wk shadow) |
+| Per-(symbol,strategy) slots | `HOUSE_STRATEGY_KEYED_SLOTS=True` | want the clean multi-timeframe A/B (raises same-symbol concurrency — review first) |
+| F8 mandate advisory | _(live; advice-only)_ | — competitors see their own E2C in the weekly mandate prompt |
+
 ## Graduated / retired
 _(empty — nothing has graduated or been killed yet)_
