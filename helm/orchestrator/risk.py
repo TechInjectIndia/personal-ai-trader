@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 from helm.config import (
     HOUSE_TRADE_FILTER,
+    MAX_OPEN_POSITIONS_PER_SYMBOL,
     dynamic_position_cap,
     live_flag,
     live_risk_limits,
@@ -144,6 +145,18 @@ def signals_for_symbol_today(symbol: str, competitor_id: str | None = None) -> i
     return int(row["n"])
 
 
+def open_positions_for_symbol(symbol: str, competitor_id: str | None = None) -> int:
+    """Count OPEN positions in `symbol` for this book (across strategies)."""
+    frag, params = _scope(competitor_id)
+    with conn() as c:
+        row = c.execute(
+            f"SELECT count(*) AS n FROM paper_trades "
+            f"WHERE status = 'OPEN' AND symbol = %s{frag}",
+            (symbol, *params),
+        ).fetchone()
+    return int(row["n"])
+
+
 def minutes_since_last_exit(symbol: str, competitor_id: str | None = None) -> Decimal | None:
     """Minutes since this book last CLOSED a trade in `symbol`, or None if it
     never has. Powers the per-symbol re-entry cooldown (rate-limits churn that
@@ -195,6 +208,15 @@ def evaluate(
     if has_open_position(symbol, competitor_id, strategy=slot_strategy):
         in_sym = f"{symbol}" + (f" [{strategy}]" if slot_strategy else "")
         return False, f"already have an open position in {in_sym}"
+
+    # With keyed slots on, multiple strategies may hold the same symbol — cap the
+    # per-symbol concurrency so correlated 1m/5m pairs can't pile the whole book
+    # into one name. (Inert when slot_strategy is None: the check above already
+    # enforces 1/symbol.)
+    if slot_strategy is not None:
+        if open_positions_for_symbol(symbol, competitor_id) >= MAX_OPEN_POSITIONS_PER_SYMBOL:
+            return False, (f"max {MAX_OPEN_POSITIONS_PER_SYMBOL} concurrent "
+                           f"positions in {symbol} reached")
 
     if signals_for_symbol_today(symbol, competitor_id) >= limits.max_signals_per_symbol_per_day:
         return False, f"already traded {symbol} max times today"

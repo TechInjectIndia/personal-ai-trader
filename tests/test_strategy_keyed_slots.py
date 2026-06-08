@@ -86,3 +86,18 @@ def test_evaluate_flag_on_allows_other_strategy(monkeypatch):
     _, reason2 = risk.evaluate(ZZZ, "BUY", 1, Decimal("100"),
                                strategy="bbands_zscore_20")
     assert "open position" in reason2
+
+
+def test_per_symbol_cap_blocks_pileup(monkeypatch):
+    """Flag ON: once MAX_OPEN_POSITIONS_PER_SYMBOL are open in a symbol, a NEW
+    strategy is blocked by the per-symbol cap (prevents correlated pile-up)."""
+    monkeypatch.setattr(risk, "live_flag", lambda name: True)
+    monkeypatch.setattr(risk, "kill_engaged_today", lambda c=None: False)
+    monkeypatch.setattr(risk, "todays_realized_pnl", lambda c=None: Decimal("0"))
+    monkeypatch.setattr(risk, "open_paper_positions", lambda c=None: 0)
+    # MAX_OPEN_POSITIONS_PER_SYMBOL=2 → open two distinct strategies in ZZZ.
+    _open_trade("orb_5m")
+    _open_trade("orb_15m")
+    allowed, reason = risk.evaluate(ZZZ, "BUY", 1, Decimal("100"),
+                                    strategy="bbands_zscore_20")  # 3rd, new strat
+    assert allowed is False and "concurrent positions" in reason

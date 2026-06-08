@@ -372,8 +372,17 @@ def main() -> int:
 
     taken = skipped = errored = stale = 0
     for sig in pending:
-        res = decide_signal_inline(sig["id"], model=model, mode=mode,
-                                   source="decide_signals")
+        # Per-signal guard: one signal's unexpected error must not abort the
+        # whole catch-up run (the next ones still get decided this tick).
+        try:
+            res = decide_signal_inline(sig["id"], model=model, mode=mode,
+                                       source="decide_signals")
+        except Exception as exc:  # noqa: BLE001 — robustness boundary
+            errored += 1
+            insert_audit("decide_signals", "signal_error",
+                         {"signal_id": sig["id"], "error": str(exc)[:300]})
+            print(f"signal {sig['id']} {sig.get('symbol')} → ERROR ({str(exc)[:80]})")
+            continue
         v = res["verdict"]
         if v == "TAKE":
             taken += 1

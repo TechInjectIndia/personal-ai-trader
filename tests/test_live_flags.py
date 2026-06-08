@@ -56,3 +56,17 @@ def test_flag_override_accepts_string_forms():
 def test_tunable_override():
     set_setting("MIN_EDGE_TO_COST", 5.0, actor="test")
     assert config.live_tunable("MIN_EDGE_TO_COST") == Decimal("5.0")
+
+
+def test_malformed_tunable_fails_safe_to_default():
+    # A garbage string / empty value must degrade to the code default, not raise
+    # on the live trade path (a NaN gate could otherwise invert the F2 check).
+    for bad in ("maybe", ""):
+        set_setting("MIN_EDGE_TO_COST", bad, actor="test")
+        assert config.live_tunable("MIN_EDGE_TO_COST") == config.MIN_EDGE_TO_COST
+
+
+def test_malformed_flag_and_unknown_key_fail_safe():
+    set_setting("HOUSE_STRATEGY_KEYED_SLOTS", "garbage", actor="test")
+    assert config.live_flag("HOUSE_STRATEGY_KEYED_SLOTS") is False  # non-truthy → off
+    assert config.live_flag("NONEXISTENT_FLAG") is False            # unknown → default, no KeyError

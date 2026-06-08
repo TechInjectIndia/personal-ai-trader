@@ -169,6 +169,13 @@ CONTEXT_SIGNAL_THRESHOLD: Decimal = Decimal("0.5")  # min bullish context score 
 # deliberately (and ideally after an adversarial review). Competition path is
 # unaffected (each competitor stays one-position-per-symbol).
 HOUSE_STRATEGY_KEYED_SLOTS: bool = False
+# When HOUSE_STRATEGY_KEYED_SLOTS is on, distinct strategies may hold concurrent
+# positions in one symbol — but several correlated 1m/5m strategy pairs could
+# otherwise pile up to max_open_positions into a SINGLE name. This caps the
+# concurrent open positions per symbol so the book stays diversified. Only
+# enforced when the keyed-slots flag is on (OFF → has_open_position already caps
+# at 1/symbol). Code-only constant (applies only once the flag is enabled).
+MAX_OPEN_POSITIONS_PER_SYMBOL: int = 2
 
 
 def dynamic_position_cap(realised_pnl_inr: Decimal, base_cap_inr: Decimal) -> Decimal:
@@ -219,40 +226,64 @@ EDITABLE_WALLET_KEYS: tuple[str, ...] = (
 )
 
 
+def _safe_int(overrides: dict, key: str, default: int) -> int:
+    """Override cast to int, degrading to `default` (audited) on a bad value."""
+    if key not in overrides:
+        return default
+    try:
+        return int(overrides[key])
+    except Exception as err:
+        _audit_bad_override(key, overrides[key], err)
+        return default
+
+
+def _safe_dec(overrides: dict, key: str, default: Decimal) -> Decimal:
+    """Override cast to a finite Decimal, degrading to `default` (audited)."""
+    if key not in overrides:
+        return default
+    try:
+        d = Decimal(str(overrides[key]))
+        if not d.is_finite():
+            raise ValueError("non-finite")
+        return d
+    except Exception as err:
+        _audit_bad_override(key, overrides[key], err)
+        return default
+
+
 def live_risk_limits() -> RiskLimits:
     """RISK overlaid with any overrides stored in the Postgres `settings` table.
 
-    Falls back to the code defaults (`RISK`) for any unset key. Imported lazily
-    inside the function to avoid a circular dependency with helm.data.store.
+    Falls back to the code defaults (`RISK`) for any unset OR malformed key, so a
+    bad override (manual DB edit) degrades to the constant rather than raising on
+    the trade path. Imported lazily to avoid a circular dependency with store.
     """
-    from helm.data.store import all_settings  # local import: see docstring
-
-    overrides = all_settings()
+    try:
+        from helm.data.store import all_settings  # local import: see docstring
+        overrides = all_settings()
+    except Exception:
+        return RISK
     return RiskLimits(
-        max_open_positions=int(overrides.get("max_open_positions", RISK.max_open_positions)),
-        max_position_inr=Decimal(str(overrides.get("max_position_inr", RISK.max_position_inr))),
-        daily_loss_kill_inr=Decimal(str(overrides.get("daily_loss_kill_inr", RISK.daily_loss_kill_inr))),
-        per_symbol_cooldown_min=int(
-            overrides.get("per_symbol_cooldown_min", RISK.per_symbol_cooldown_min)
-        ),
-        max_signals_per_symbol_per_day=int(
-            overrides.get("max_signals_per_symbol_per_day", RISK.max_signals_per_symbol_per_day)
-        ),
+        max_open_positions=_safe_int(overrides, "max_open_positions", RISK.max_open_positions),
+        max_position_inr=_safe_dec(overrides, "max_position_inr", RISK.max_position_inr),
+        daily_loss_kill_inr=_safe_dec(overrides, "daily_loss_kill_inr", RISK.daily_loss_kill_inr),
+        per_symbol_cooldown_min=_safe_int(
+            overrides, "per_symbol_cooldown_min", RISK.per_symbol_cooldown_min),
+        max_signals_per_symbol_per_day=_safe_int(
+            overrides, "max_signals_per_symbol_per_day", RISK.max_signals_per_symbol_per_day),
     )
 
 
 def live_wallet_config() -> WalletConfig:
-    """WALLET overlaid with any settings-table overrides."""
-    from helm.data.store import all_settings  # local import: see live_risk_limits
-
-    overrides = all_settings()
+    """WALLET overlaid with any settings-table overrides (fail-safe to WALLET)."""
+    try:
+        from helm.data.store import all_settings  # local import: see live_risk_limits
+        overrides = all_settings()
+    except Exception:
+        return WALLET
     return WalletConfig(
-        initial_capital_inr=Decimal(str(
-            overrides.get("initial_capital_inr", WALLET.initial_capital_inr)
-        )),
-        goal_capital_inr=Decimal(str(
-            overrides.get("goal_capital_inr", WALLET.goal_capital_inr)
-        )),
+        initial_capital_inr=_safe_dec(overrides, "initial_capital_inr", WALLET.initial_capital_inr),
+        goal_capital_inr=_safe_dec(overrides, "goal_capital_inr", WALLET.goal_capital_inr),
     )
 
 
@@ -288,22 +319,56 @@ _TUNABLE_DEFAULTS: dict[str, Decimal] = {
 _TRUTHY = {"true", "1", "yes", "on"}
 
 
-def live_flag(name: str) -> bool:
-    """Live value of a boolean feature flag (settings override else code default)."""
-    from helm.data.store import all_settings  # local: avoid circular import
+def _audit_bad_override(key: str, value: object, err: object) -> None:
+    """Best-effort audit of a malformed settings override (never raises)."""
+    try:
+        from helm.data.store import insert_audit
+        insert_audit("config", "bad_override",
+                     {"key": key, "value": str(value)[:80], "error": str(err)[:120]})
+    except Exception:
+        pass
 
-    v = all_settings().get(name)
+
+def live_flag(name: str) -> bool:
+    """Live value of a boolean feature flag (settings override else code default).
+
+    FAILS SAFE: any DB error or unknown key degrades to the code default. The
+    bool parse itself never raises (a non-truthy/garbage value reads as False),
+    so a malformed flag row can never crash the trade path."""
+    default = bool(_FLAG_DEFAULTS.get(name, False))
+    try:
+        from helm.data.store import all_settings  # local: avoid circular import
+        v = all_settings().get(name)
+    except Exception:
+        return default
     if v is None:
-        return bool(_FLAG_DEFAULTS[name])
+        return default
     return str(v).strip().strip('"').lower() in _TRUTHY
 
 
 def live_tunable(name: str) -> Decimal:
-    """Live value of a Decimal tunable (settings override else code default)."""
-    from helm.data.store import all_settings  # local: avoid circular import
+    """Live value of a Decimal tunable (settings override else code default).
 
-    v = all_settings().get(name)
-    return Decimal(str(v)) if v is not None else _TUNABLE_DEFAULTS[name]
+    FAILS SAFE: a malformed/non-finite override (e.g. 'maybe', '', NaN, Infinity)
+    or a DB error degrades to the code default and is audited — it must never
+    raise on the live trade path (a NaN MIN_EDGE_TO_COST could otherwise silently
+    invert the F2 cost gate)."""
+    default = _TUNABLE_DEFAULTS[name]
+    try:
+        from helm.data.store import all_settings  # local: avoid circular import
+        v = all_settings().get(name)
+    except Exception:
+        return default
+    if v is None:
+        return default
+    try:
+        d = Decimal(str(v))
+        if not d.is_finite():
+            raise ValueError("non-finite")
+        return d
+    except Exception as err:
+        _audit_bad_override(name, v, err)
+        return default
 
 
 # --- Polling ---
