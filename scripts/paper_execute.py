@@ -20,13 +20,13 @@ single pool currently has free (initial + realised net P&L − locked in OPEN).
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 from helm.config import dynamic_position_cap, live_risk_limits
-from helm.data.store import conn, insert_audit
+from helm.data.store import conn, first_candle_open_at_or_after, insert_audit
 from helm.orchestrator import risk
 from helm.wallet import wallet_state
 
@@ -61,7 +61,28 @@ def execute_signal(
         if sig["consumed"]:
             return ExecutionResult(False, None, f"signal {signal_id} already consumed")
 
-        entry = Decimal(sig["entry_price"])
+        signal_entry = Decimal(sig["entry_price"])
+        # BUG #682: book the realistic fill — the OPEN of the first 1-min bar
+        # AFTER the signal/decision, not the breakout bar's close. The strategy
+        # fires on the breakout bar and signals.ts is that bar's open minute, so
+        # we look one minute past it to avoid picking the breakout bar itself
+        # (whose open is the pre-breakout price).
+        # Truncate to the minute first: candles_1m.bar_ts is always minute-
+        # aligned (date_trunc('minute', ...) in roll_minute_candles), so a
+        # sub-minute signals.ts would otherwise make `bar_ts >= fill_at` skip
+        # the intended next bar.
+        fill_at = (sig["ts"].astimezone(IST).replace(second=0, microsecond=0)
+                   + timedelta(minutes=1))
+        realistic = first_candle_open_at_or_after(sig["symbol"], fill_at)
+        if realistic is not None:
+            entry = realistic
+            fill_source = "next_bar_open"
+        else:
+            # Live-intraday: the next bar hasn't formed yet (the inline path
+            # runs seconds after the breakout bar closes). Don't block the
+            # trade — fall back to the signal's entry (the prior behavior).
+            entry = signal_entry
+            fill_source = "signal_entry_fallback"
         # Sizing budget = min(dynamic per-trade cap, wallet cash available).
         # The dynamic cap starts at live_risk_limits().max_position_inr and
         # grows with realised pnl (see helm.config.dynamic_position_cap), so
@@ -145,6 +166,8 @@ def execute_signal(
             "side": sig["side"],
             "qty": sized_qty,
             "entry": str(entry),
+            "fill_source": fill_source,
+            "signal_entry": str(signal_entry),
         },
     )
     return ExecutionResult(

@@ -111,6 +111,27 @@ def todays_candles(symbol: str) -> list[dict[str, Any]]:
         )
 
 
+def first_candle_open_at_or_after(symbol: str, at_ts: datetime) -> Decimal | None:
+    """Open of the first 1-min candle with bar_ts >= at_ts (realistic fill bar).
+
+    Returns None if no such bar exists yet (live-intraday: the next bar hasn't
+    formed). `at_ts` is tz-aware; bar_ts is timestamptz so the comparison is
+    timezone-correct regardless of IST/UTC representation. Indexed by
+    candles_bar_ts, so the lookup is cheap.
+    """
+    with conn() as c:
+        row = c.execute(
+            """
+            SELECT open FROM candles_1m
+            WHERE symbol = %s AND bar_ts >= %s
+            ORDER BY bar_ts ASC
+            LIMIT 1
+            """,
+            (symbol, at_ts),
+        ).fetchone()
+    return Decimal(row["open"]) if row else None
+
+
 def roll_minute_candles() -> int:
     """
     Fold raw ticks into 1-minute OHLC candles.

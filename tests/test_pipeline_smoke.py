@@ -275,3 +275,132 @@ def test_manage_positions_closes_on_target():
     now_utc = datetime.now(timezone.utc)
     delta = abs((now_utc - closed["exit_ts"]).total_seconds())
     assert delta < 120, f"exit_ts not recent: delta={delta}s"
+
+
+# ─── Test 4: BUG #682 — realistic next-bar-open fill ──────────────────
+
+def _insert_take_signal(now_ist: datetime, entry: Decimal) -> int:
+    """Insert an unconsumed ZZZTEST BUY signal at `now_ist`; return its id."""
+    with conn() as c:
+        row = c.execute(
+            """
+            INSERT INTO signals
+                (ts, strategy, symbol, side, entry_price, stop_loss, target,
+                 rationale, payload, consumed)
+            VALUES (%s, 'orb_15m', %s, 'BUY', %s, %s, %s, %s, %s::jsonb, FALSE)
+            RETURNING id
+            """,
+            (now_ist, TEST_SYMBOL,
+             entry, Decimal("99.00"), Decimal("104.80"),
+             "bug-682 fill-price test", '{"smoke": true}'),
+        ).fetchone()
+    return row["id"]
+
+
+def _patch_take(monkeypatch) -> None:
+    import scripts.decide_signals as decide_mod
+    import helm.llm as llm_mod
+
+    def fake_decide(system, user, **kwargs):  # noqa: ANN001
+        return {"verdict": "TAKE", "confidence": 0.8, "reasoning": "fake TAKE"}
+
+    monkeypatch.setattr(decide_mod, "llm_decide", fake_decide)
+    monkeypatch.setattr(llm_mod, "decide", fake_decide)
+
+
+def test_fill_uses_next_bar_open_when_present(monkeypatch):
+    """BUG #682: when a 1-min bar exists AFTER the signal minute, the booked
+    entry_price (and decisions.final_entry) is that bar's OPEN, not the
+    breakout-bar close stored on the signal."""
+    import scripts.decide_signals as decide_mod
+    _patch_take(monkeypatch)
+
+    now_ist = datetime.now(IST)
+    sig_id = _insert_take_signal(now_ist, Decimal("101.80"))
+
+    # The next tradeable bar (signal minute + 1) opened HIGHER than the
+    # breakout close — the realistic, worse cost basis for a long.
+    next_bar = now_ist.replace(second=0, microsecond=0) + timedelta(minutes=1)
+    with conn() as c:
+        c.execute(
+            """
+            INSERT INTO candles_1m
+                (symbol, bar_ts, open, high, low, close, tick_count)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (TEST_SYMBOL, next_bar, Decimal("102.10"), Decimal("102.50"),
+             Decimal("101.90"), Decimal("102.30"), 6),
+        )
+
+    res = decide_mod.decide_signal_inline(sig_id, source="test")
+    assert res["verdict"] == "TAKE", f"expected TAKE, got {res!r}"
+
+    with conn() as c:
+        dec = c.execute(
+            "SELECT * FROM decisions WHERE signal_id=%s", (sig_id,),
+        ).fetchone()
+        assert dec["verdict"] == "TAKE"
+        assert Decimal(dec["final_entry"]) == Decimal("102.10")
+        pt = c.execute(
+            "SELECT * FROM paper_trades WHERE decision_id=%s", (dec["id"],),
+        ).fetchone()
+        assert pt is not None, "trade not booked"
+        assert Decimal(pt["entry_price"]) == Decimal("102.10"), \
+            "fill must be the next-bar open, not the breakout close"
+
+
+def test_fill_falls_back_to_signal_entry_when_no_later_bar(monkeypatch):
+    """BUG #682: when no 1-min bar exists after the signal yet (live-intraday),
+    the trade still books and entry_price stays the signal's entry_price —
+    the prior behavior is preserved, the trade is never blocked."""
+    import scripts.decide_signals as decide_mod
+    _patch_take(monkeypatch)
+
+    now_ist = datetime.now(IST)
+    sig_id = _insert_take_signal(now_ist, Decimal("101.80"))
+    # Deliberately insert NO candle after the signal.
+
+    res = decide_mod.decide_signal_inline(sig_id, source="test")
+    assert res["verdict"] == "TAKE", f"expected TAKE, got {res!r}"
+
+    with conn() as c:
+        dec = c.execute(
+            "SELECT * FROM decisions WHERE signal_id=%s", (sig_id,),
+        ).fetchone()
+        pt = c.execute(
+            "SELECT * FROM paper_trades WHERE decision_id=%s", (dec["id"],),
+        ).fetchone()
+        assert pt is not None, "trade must still book on the fallback path"
+        assert pt["status"] == "OPEN"
+        assert Decimal(pt["entry_price"]) == Decimal("101.80")
+
+
+# ─── Test 5: store helper first_candle_open_at_or_after ───────────────
+
+def test_first_candle_open_at_or_after():
+    """Returns the open of the earliest bar with bar_ts >= at_ts; None when
+    none exists; boundary at_ts == bar_ts selects that bar."""
+    from helm.data.store import first_candle_open_at_or_after
+
+    base = datetime(2026, 5, 19, 9, 30, tzinfo=IST)
+    with conn() as c:
+        for minute, open_px in ((0, "200.00"), (1, "201.00")):
+            c.execute(
+                """
+                INSERT INTO candles_1m
+                    (symbol, bar_ts, open, high, low, close, tick_count)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (TEST_SYMBOL, base + timedelta(minutes=minute),
+                 Decimal(open_px), Decimal("210.00"), Decimal("199.00"),
+                 Decimal(open_px), 4),
+            )
+
+    # Between-minute ts → first bar strictly after 09:30 is 09:31.
+    mid = base + timedelta(seconds=30)
+    assert first_candle_open_at_or_after(TEST_SYMBOL, mid) == Decimal("201.00")
+    # Boundary: at_ts exactly equal to a bar_ts returns that bar.
+    assert first_candle_open_at_or_after(TEST_SYMBOL, base) == Decimal("200.00")
+    # No bar at/after 09:32 → None.
+    after = base + timedelta(minutes=2)
+    assert first_candle_open_at_or_after(TEST_SYMBOL, after) is None
