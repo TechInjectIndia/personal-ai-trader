@@ -13,16 +13,20 @@ import pandas as pd
 import streamlit as st
 
 from helm.config import (
+    EDITABLE_FLAG_KEYS,
     EDITABLE_RISK_KEYS,
+    EDITABLE_TUNABLE_KEYS,
     EDITABLE_WALLET_KEYS,
     RISK,
     WALLET,
+    live_flag,
     live_risk_limits,
+    live_tunable,
     live_wallet_config,
 )
 from helm.dashboard.format import fmt_ist, wrapped_table
 from helm.dashboard.theme import apply_theme, page_header
-from helm.data.store import all_settings, conn, insert_audit, set_setting
+from helm.data.store import all_settings, conn, get_setting, insert_audit, set_setting
 
 st.set_page_config(page_title="Helm — Settings", page_icon="⚙️", layout="wide")
 apply_theme()
@@ -84,8 +88,8 @@ FIELDS = {
     },
     "per_symbol_cooldown_min": {
         "label": "Per-symbol cooldown (minutes)",
-        "help": "Minutes to wait before re-entering the same symbol "
-                "(not currently enforced by risk.evaluate but consumed by future logic).",
+        "help": "Minutes to wait before re-entering the same symbol after its "
+                "last exit. Enforced in risk.evaluate (2026-06-08). 0 disables.",
         "kind": "int",
         "min": 0,
         "max": 240,
@@ -224,6 +228,129 @@ _render_form(
     FIELDS,
     current,
 )
+
+# ───────────────────────── feature flags (live experiments) ─────────────────
+FLAG_FIELDS = {
+    "CONVICTION_SIZING_ENABLED": {
+        "label": "F5 · Conviction-weighted sizing",
+        "help": "Scale per-trade size by decider confidence + skip sub-floor "
+                "convictions. Keep OFF until conf↔outcome holds over ≥50 trades.",
+        "review": True,
+    },
+    "CONTEXT_SIGNALS_ENABLED": {
+        "label": "F7-P3c · Context-driven signals",
+        "help": "Let the ContextMomentum strategy emit trades from strong news "
+                "catalysts. Needs the Context Engine running + shadow-validated.",
+        "review": False,
+    },
+    "HOUSE_STRATEGY_KEYED_SLOTS": {
+        "label": "F6 · Per-(symbol,strategy) position slots",
+        "help": "Let distinct house strategies (e.g. a 1-min and its 5-min twin) "
+                "hold concurrent positions in the same symbol — unblocks the clean "
+                "multi-timeframe A/B. Raises same-symbol concurrency.",
+        "review": True,
+    },
+}
+
+
+assert set(FLAG_FIELDS) == set(EDITABLE_FLAG_KEYS), (
+    f"FLAG_FIELDS {set(FLAG_FIELDS)} != EDITABLE_FLAG_KEYS {set(EDITABLE_FLAG_KEYS)}")
+
+
+def _truthy(v) -> bool:
+    return str(v).strip().strip('"').lower() in ("true", "1", "yes", "on")
+
+
+st.subheader("Feature flags (live experiments)")
+st.caption(
+    "Flip an experiment on/off live — written to `settings`, picked up on the next "
+    "cron tick, no restart. ⚠ = adversarial review pending; keep OFF until reviewed."
+)
+with st.form("edit_flags"):
+    new_flags: dict[str, bool] = {}
+    for key, spec in FLAG_FIELDS.items():
+        label = spec["label"] + ("  ⚠ review pending" if spec["review"] else "")
+        new_flags[key] = st.toggle(label, value=live_flag(key), help=spec["help"],
+                                   key=f"flag_{key}")
+    paused_now = _truthy(get_setting("autonomy_paused"))
+    new_paused = st.toggle(
+        "⏸ Pause self-improvement loop (autonomy_paused)", value=paused_now,
+        help="Stop the PM→Engineer→Tester loop from making changes. Trading is "
+             "unaffected.", key="flag_autonomy_paused")
+    if st.form_submit_button("Save flags", type="primary"):
+        changed: dict[str, str] = {}
+        for key in FLAG_FIELDS:
+            if new_flags[key] != live_flag(key):
+                set_setting(key, bool(new_flags[key]), actor="dashboard")
+                changed[key] = str(new_flags[key])
+        if new_paused != paused_now:
+            set_setting("autonomy_paused", bool(new_paused), actor="dashboard")
+            changed["autonomy_paused"] = str(new_paused)
+        if changed:
+            insert_audit("settings", "flags_updated", {"changes": changed})
+            st.success(f"Saved {len(changed)} flag(s): {', '.join(changed)}")
+            st.rerun()
+        else:
+            st.info("Nothing changed.")
+
+# ───────────────────────── cost & sizing tunables ───────────────────────────
+TUNABLE_FIELDS = {
+    "MIN_EDGE_TO_COST": {
+        "label": "F2 · Min edge-to-cost (×)",
+        "help": "Refuse trades whose target reward is below this × the round-trip "
+                "cost. 0 disables the gate.", "min": 0.0, "max": 10.0, "step": 0.5},
+    "CONVICTION_FLOOR": {
+        "label": "F5 · Conviction floor",
+        "help": "Below this decider confidence, skip the trade (only when F5 sizing "
+                "is on).", "min": 0.0, "max": 1.0, "step": 0.05},
+    "CONVICTION_SIZE_MIN_MULT": {
+        "label": "F5 · Min size multiplier",
+        "help": "Smallest size multiple (at the floor); ramps to 1.0 at conf=1 "
+                "(only when F5 sizing is on).", "min": 0.1, "max": 1.0, "step": 0.05},
+}
+assert set(TUNABLE_FIELDS) == set(EDITABLE_TUNABLE_KEYS), (
+    f"TUNABLE_FIELDS {set(TUNABLE_FIELDS)} != EDITABLE_TUNABLE_KEYS {set(EDITABLE_TUNABLE_KEYS)}")
+st.subheader("Cost & sizing tunables")
+st.caption("Live-tunable knobs for the cost gate and conviction sizing.")
+with st.form("edit_tunables"):
+    new_tun: dict[str, float] = {}
+    cols = st.columns(len(TUNABLE_FIELDS))
+    for i, (key, spec) in enumerate(TUNABLE_FIELDS.items()):
+        new_tun[key] = cols[i].number_input(
+            spec["label"], min_value=spec["min"], max_value=spec["max"],
+            value=float(live_tunable(key)), step=spec["step"], help=spec["help"],
+            key=f"tun_{key}")
+    if st.form_submit_button("Save tunables", type="primary"):
+        tchanged: dict[str, str] = {}
+        for key in TUNABLE_FIELDS:
+            if str(new_tun[key]) != str(float(live_tunable(key))):
+                set_setting(key, float(new_tun[key]), actor="dashboard")
+                tchanged[key] = str(new_tun[key])
+        if tchanged:
+            insert_audit("settings", "tunables_updated", {"changes": tchanged})
+            st.success(f"Saved {len(tchanged)} tunable(s): {', '.join(tchanged)}")
+            st.rerun()
+        else:
+            st.info("Nothing changed.")
+
+# Code-only constants (strategy-internal → require a PM2 reload, not live).
+with st.expander("Code-only config (edit helm/config.py + PM2 reload)"):
+    st.caption("Strategy-internal — kept out of the live overlay so strategies "
+               "stay pure (no DB reads in scan()).")
+    from helm.config import (  # local import: display-only
+        CONTEXT_ENGINE_TIMEOUT_S,
+        CONTEXT_SIGNAL_THRESHOLD,
+        MEANREV_WIDEN_OR_DROP,
+        MIN_TARGET_PCT,
+    )
+    import os as _os
+    st.write({
+        "MIN_TARGET_PCT (F4 target floor)": str(MIN_TARGET_PCT),
+        "MEANREV_WIDEN_OR_DROP": MEANREV_WIDEN_OR_DROP,
+        "CONTEXT_SIGNAL_THRESHOLD": str(CONTEXT_SIGNAL_THRESHOLD),
+        "CONTEXT_ENGINE_URL (.env)": _os.environ.get("CONTEXT_ENGINE_URL") or "(unset → engine off)",
+        "CONTEXT_ENGINE_TIMEOUT_S": CONTEXT_ENGINE_TIMEOUT_S,
+    })
 
 # ───────────────────────── reset controls ─────────────────────────
 editable_all = EDITABLE_WALLET_KEYS + EDITABLE_RISK_KEYS

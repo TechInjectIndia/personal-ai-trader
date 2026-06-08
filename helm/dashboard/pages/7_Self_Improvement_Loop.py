@@ -15,6 +15,8 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from helm.analytics.economics import book_economics
+from helm.config import live_flag
 from helm.dashboard.agents import HOUSE_ID, agent_label, agent_selectbox, scope_predicate
 from helm.dashboard.format import fmt_ist_short, wrapped_table
 from helm.dashboard.theme import apply_theme, page_header
@@ -208,6 +210,40 @@ paused = _autonomy_paused()
 if paused:
     st.error("⏸️  Autonomy paused — Tester or human halted the loop. "
              "Check agent_runs for the cause.")
+
+# ─── 0. Live experiments & economics (global; manage on the ⚙️ Settings page) ─
+import os as _os  # noqa: E402  (display-only, local to render)
+
+st.subheader("Live experiments & economics")
+_flags = [
+    ("F2 min-edge gate", True, "always on"),
+    ("F5 conviction sizing", live_flag("CONVICTION_SIZING_ENABLED"), "⚠ review pending"),
+    ("F7 context signals", live_flag("CONTEXT_SIGNALS_ENABLED"), "needs engine"),
+    ("F6 per-strategy slots", live_flag("HOUSE_STRATEGY_KEYED_SLOTS"), "⚠ review pending"),
+    ("Context engine", bool(_os.environ.get("CONTEXT_ENGINE_URL")), ".env"),
+    ("Autonomy", not paused, "loop active" if not paused else "paused"),
+]
+fcols = st.columns(len(_flags))
+for col, (name, on, note) in zip(fcols, _flags):
+    col.metric(name, "ON" if on else "OFF")
+    if note:
+        col.caption(note)
+st.caption("Toggle these on the ⚙️ Settings page → Feature flags. ⚠ flags should "
+           "stay OFF until adversarially reviewed.")
+
+try:
+    _econ = book_economics(group_by="strategy")
+    if _econ:
+        _erows = [{
+            "Strategy": k, "Trades": e.n, "Gross ₹": float(e.gross_pnl),
+            "Cost ₹": float(e.charges), "Net ₹": float(e.net_pnl),
+            "E2C": float(e.realised_e2c), "Win %": float(e.win_pct),
+        } for k, e in sorted(_econ.items(), key=lambda kv: kv[1].net_pnl)]
+        st.caption("Per-strategy unit economics — E2C (avg move ÷ cost) ≥ 3 is the "
+                   "bar; below it, the ~₹13/trade cost eats the edge.")
+        wrapped_table(pd.DataFrame(_erows))
+except Exception as _e:  # never break the page on an analytics hiccup
+    st.caption(f"economics unavailable: {_e}")
 
 latest = _latest_snapshot(agent_sel)
 if not latest:
