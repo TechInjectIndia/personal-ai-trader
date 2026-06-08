@@ -25,7 +25,8 @@ from decimal import Decimal
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
-from helm.config import dynamic_position_cap, live_risk_limits
+from helm.charges import round_trip_breakdown
+from helm.config import MIN_EDGE_TO_COST, dynamic_position_cap, live_risk_limits
 from helm.data.store import conn, first_candle_open_at_or_after, insert_audit
 from helm.orchestrator import risk
 from helm.wallet import wallet_state
@@ -37,6 +38,18 @@ class ExecutionResult(NamedTuple):
     ok: bool
     decision_id: int | None
     message: str
+
+
+def _edge_to_cost(side: str, qty: int, entry: Decimal, target: Decimal) -> Decimal:
+    """Gross reward to target as a multiple of the expected round-trip cost.
+
+    Uses the SAME charge model the realized P&L uses (round_trip_breakdown), so
+    the gate and the books agree. Returns Decimal('0') when cost is zero so the
+    caller treats a degenerate position as un-tradeable rather than dividing by 0.
+    """
+    exp_cost = round_trip_breakdown(side, qty, entry, target).total
+    gross_reward = abs(target - entry) * qty
+    return (gross_reward / exp_cost) if exp_cost > 0 else Decimal("0")
 
 
 def execute_signal(
@@ -98,6 +111,7 @@ def execute_signal(
         else:
             sized_qty = qty
 
+        target = sig["target"]
         if sized_qty <= 0:
             # Wallet can't afford even a single share. Skip cleanly so the
             # signal still gets a decision row and is marked consumed.
@@ -105,6 +119,13 @@ def execute_signal(
                 f"wallet has ₹{wallet.available} available, one share of "
                 f"{sig['symbol']} costs ₹{entry}"
             )
+        elif target is not None and (
+            e2c := _edge_to_cost(sig["side"], sized_qty, entry, Decimal(target))
+        ) < MIN_EDGE_TO_COST:
+            # F2: target move too small relative to round-trip cost — a
+            # guaranteed net loser even if right. Skip via the shared SKIP tail.
+            # (target=None signals can't be E2C-evaluated → fall through.)
+            allowed, reason = False, f"below_min_edge_to_cost (E2C={e2c:.2f})"
         else:
             allowed, reason = risk.evaluate(sig["symbol"], sig["side"], sized_qty, entry)
 

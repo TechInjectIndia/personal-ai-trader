@@ -109,6 +109,16 @@ EXIT_TIME_DECAY_START_MIN: Decimal = Decimal("45")    # begin wind-down tighten 
 EXIT_TIME_DECAY_MAX_LOCK: Decimal = Decimal("0.80")   # near 15:15, lock up to 80% of open profit
 
 
+# --- Cost-aware minimum-edge gate (F2) ---
+# Real-money diagnosis: gross P&L is ~flat but ~Rs13/trade of charges eats ~43%
+# of the avg Rs31 gross move, so trades whose target reward is small relative to
+# round-trip cost are guaranteed net losers. Refuse to open any house trade whose
+# gross reward to target is below this multiple of the expected round-trip cost
+# (E2C = |target-entry|*qty / round_trip_breakdown.total). Code-only Decimal,
+# same idiom as DYNAMIC_CAP_*/EXIT_*. Set to Decimal("0") to disable (kill switch).
+MIN_EDGE_TO_COST: Decimal = Decimal("3.0")
+
+
 def dynamic_position_cap(realised_pnl_inr: Decimal, base_cap_inr: Decimal) -> Decimal:
     """Per-trade notional cap, scaled by realised profit.
 
