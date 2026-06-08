@@ -74,10 +74,17 @@ def _z(close: Decimal, mean: Decimal, sd: Decimal) -> Decimal | None:
 class MeanReversion(Strategy):
     """Z-score lower-band fade. Parametrizable (N, K) for later fast variants."""
 
-    def __init__(self, window: int = N, k: Decimal = K) -> None:
+    def __init__(self, window: int = N, k: Decimal = K, bar_minutes: int = 1) -> None:
         self.window = window
         self.k = k
-        self._name = f"bbands_zscore_{window}"
+        self.bar_minutes = bar_minutes
+        # Keep the 1-min default name as bbands_zscore_{window} (unchanged) to
+        # preserve F1/retro lineage; higher timeframes get a _{N}m suffix so F1
+        # attributes per timeframe and the dedupe/trigger guards stay per-variant.
+        if bar_minutes > 1:
+            self._name = f"bbands_zscore_{window}_{bar_minutes}m"
+        else:
+            self._name = f"bbands_zscore_{window}"
 
     @property
     def name(self) -> str:

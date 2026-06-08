@@ -111,6 +111,55 @@ def todays_candles(symbol: str) -> list[dict[str, Any]]:
         )
 
 
+def resample_candles(
+    symbol: str, minutes: int, lookback_bars: int = 0
+) -> list[dict[str, Any]]:
+    """Aggregate today's `candles_1m` into `minutes`-minute OHLC bars.
+
+    Buckets are anchored to the 09:15 IST session open via Postgres `date_bin`
+    (PG14+), so 5-min buckets align to 09:15-09:20, 09:20-09:25, ... and 15-min
+    buckets to 09:15/09:30/09:45. OHLC aggregation mirrors `roll_minute_candles`
+    one level up: open = first 1-min open, high = max, low = min, close = last
+    1-min close, tick_count = summed. Returns the SAME dict shape strategies
+    expect — {bar_ts, open, high, low, close, tick_count} — in chronological
+    order, so no strategy code needs to know it isn't 1-min data.
+
+    `minutes <= 1` short-circuits to `todays_candles` (byte-identical 1-min path)
+    so existing strategies are unaffected.
+
+    `lookback_bars` is reserved for a future rolling-window limit; at today's
+    scale all of a session's N-min bars are cheap, so it is currently unused.
+    """
+    if minutes <= 1:
+        return todays_candles(symbol)
+    with conn() as c:
+        return list(
+            c.execute(
+                """
+                WITH anchor AS (
+                    SELECT (date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata')
+                            + interval '9 hours 15 minutes')
+                           AT TIME ZONE 'Asia/Kolkata' AS open_ts
+                )
+                SELECT
+                    date_bin(make_interval(mins => %s), bar_ts,
+                             (SELECT open_ts FROM anchor))  AS bar_ts,
+                    (array_agg(open  ORDER BY bar_ts ASC))[1]  AS open,
+                    MAX(high)                                  AS high,
+                    MIN(low)                                   AS low,
+                    (array_agg(close ORDER BY bar_ts DESC))[1] AS close,
+                    SUM(tick_count)                            AS tick_count
+                FROM candles_1m
+                WHERE symbol = %s
+                  AND bar_ts >= date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata'
+                GROUP BY 1
+                ORDER BY bar_ts ASC
+                """,
+                (minutes, symbol),
+            )
+        )
+
+
 def first_candle_open_at_or_after(symbol: str, at_ts: datetime) -> Decimal | None:
     """Open of the first 1-min candle with bar_ts >= at_ts (realistic fill bar).
 

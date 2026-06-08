@@ -25,6 +25,11 @@ class Signal:
 class Strategy(ABC):
     """Pure-function-style: in candles, out signals. No DB access here."""
 
+    # Candle timeframe (in minutes) this strategy consumes. Default 1 so every
+    # existing strategy inherits the 1-min path with zero edits. Variants set a
+    # larger value (e.g. 5) and scan_signals feeds them resampled N-min bars.
+    bar_minutes: int = 1
+
     @property
     @abstractmethod
     def name(self) -> str: ...
@@ -33,7 +38,8 @@ class Strategy(ABC):
     def scan(self, symbol: str, candles: list[dict]) -> Signal | None:
         """
         Return a Signal if rules fire on this symbol given today's candles,
-        else None. `candles` is chronological 1-min OHLC dicts:
+        else None. `candles` is chronological OHLC dicts at this strategy's
+        `bar_minutes` timeframe (1-min by default):
         {bar_ts, open, high, low, close, tick_count}.
         """
         ...

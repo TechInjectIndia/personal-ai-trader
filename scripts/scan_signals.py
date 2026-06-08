@@ -31,7 +31,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from helm.config import TRADING_END, TRADING_START, WATCHLIST
-from helm.data.store import conn, insert_audit, todays_candles
+from helm.data.store import conn, insert_audit, resample_candles
 from helm.strategies import ACTIVE
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -80,7 +80,10 @@ def main() -> int:
     with conn() as c:
         for strat in ACTIVE:
             for symbol in WATCHLIST:
-                candles = todays_candles(symbol)
+                # Feed each strategy candles at ITS timeframe. bar_minutes<=1
+                # short-circuits to the exact 1-min path (todays_candles), so
+                # 1-min strategies are byte-identical to before.
+                candles = resample_candles(symbol, getattr(strat, "bar_minutes", 1))
                 signal = strat.scan(symbol, candles)
                 check = {
                     "strategy": strat.name,
