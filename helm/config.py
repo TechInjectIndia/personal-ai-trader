@@ -159,6 +159,18 @@ CONTEXT_SIGNALS_ENABLED: bool = False
 CONTEXT_SIGNAL_THRESHOLD: Decimal = Decimal("0.5")  # min bullish context score to fire
 
 
+# --- Per-(symbol,strategy) position slots (F6 A/B unblock) — FLAG-GATED, OFF ---
+# Today the HOUSE risk gate allows ONE open position per symbol, so a 5-min
+# variant and its 1-min twin contend for the same slot (whichever fires first
+# blocks the other), confounding the multi-timeframe A/B. When True, the house
+# `has_open_position` check keys on (symbol, strategy) so distinct strategies can
+# hold concurrent positions in the same name — max_open_positions still caps
+# TOTAL exposure. OFF by default: this raises same-symbol concurrency, so enable
+# deliberately (and ideally after an adversarial review). Competition path is
+# unaffected (each competitor stays one-position-per-symbol).
+HOUSE_STRATEGY_KEYED_SLOTS: bool = False
+
+
 def dynamic_position_cap(realised_pnl_inr: Decimal, base_cap_inr: Decimal) -> Decimal:
     """Per-trade notional cap, scaled by realised profit.
 

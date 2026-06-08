@@ -106,7 +106,7 @@ def test_target_none_skips_gate(monkeypatch):
     seen = {}
     import scripts.paper_execute as pe
 
-    def _spy(symbol, side, qty, entry):
+    def _spy(symbol, side, qty, entry, **kw):
         seen["called"] = True
         return False, "spy-block"
 

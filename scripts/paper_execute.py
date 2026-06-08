@@ -164,7 +164,8 @@ def execute_signal(
                       symbol=sig["symbol"], qty=sized_qty, entry=entry,
                       target=target, e2c=e2c, min_required=MIN_EDGE_TO_COST)
         else:
-            allowed, reason = risk.evaluate(sig["symbol"], sig["side"], sized_qty, entry)
+            allowed, reason = risk.evaluate(sig["symbol"], sig["side"], sized_qty, entry,
+                                            strategy=sig.get("strategy"))
 
         decision_row = c.execute(
             """

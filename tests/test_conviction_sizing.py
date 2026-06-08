@@ -82,7 +82,7 @@ def test_flag_on_scales_cap(monkeypatch):
     seen = {}
     real_cap = pe.dynamic_position_cap
 
-    def _spy_eval(symbol, side, qty, entry, competitor_id=None):
+    def _spy_eval(symbol, side, qty, entry, competitor_id=None, **kw):
         seen["qty"] = qty
         return False, "spy"  # block after sizing so no trade is booked
     monkeypatch.setattr(pe.risk, "evaluate", _spy_eval)

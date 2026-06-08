@@ -21,7 +21,12 @@ from datetime import date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from helm.config import HOUSE_TRADE_FILTER, dynamic_position_cap, live_risk_limits
+from helm.config import (
+    HOUSE_STRATEGY_KEYED_SLOTS,
+    HOUSE_TRADE_FILTER,
+    dynamic_position_cap,
+    live_risk_limits,
+)
 from helm.data.store import conn
 from helm.wallet import WalletState, wallet_state
 
@@ -99,13 +104,27 @@ def kill_engaged_today(competitor_id: str | None = None) -> bool:
     return bool(row and row["kill_engaged"])
 
 
-def has_open_position(symbol: str, competitor_id: str | None = None) -> bool:
+def has_open_position(symbol: str, competitor_id: str | None = None,
+                      strategy: str | None = None) -> bool:
     frag, params = _scope(competitor_id)
     with conn() as c:
-        row = c.execute(
-            f"SELECT 1 FROM paper_trades WHERE status = 'OPEN' AND symbol = %s{frag} LIMIT 1",
-            (symbol, *params),
-        ).fetchone()
+        if strategy is not None:
+            # Key the slot on (symbol, strategy): join through decisions→signals.
+            # Qualify competitor_id with pt. (signals/decisions also carry it).
+            row = c.execute(
+                f"SELECT 1 FROM paper_trades pt "
+                f"JOIN decisions d ON d.id = pt.decision_id "
+                f"JOIN signals s ON s.id = d.signal_id "
+                f"WHERE pt.status = 'OPEN' AND pt.symbol = %s"
+                f"{frag.replace('competitor_id', 'pt.competitor_id')} "
+                f"AND s.strategy = %s LIMIT 1",
+                (symbol, *params, strategy),
+            ).fetchone()
+        else:
+            row = c.execute(
+                f"SELECT 1 FROM paper_trades WHERE status = 'OPEN' AND symbol = %s{frag} LIMIT 1",
+                (symbol, *params),
+            ).fetchone()
     return row is not None
 
 
@@ -148,6 +167,7 @@ def evaluate(
     qty: int,
     entry_price: Decimal,
     competitor_id: str | None = None,
+    strategy: str | None = None,
 ) -> tuple[bool, str]:
     """Return (allowed, reason). Reason is human-readable, used for audit.
 
@@ -167,8 +187,14 @@ def evaluate(
     if open_paper_positions(competitor_id) >= limits.max_open_positions:
         return False, f"max_open_positions={limits.max_open_positions} reached"
 
-    if has_open_position(symbol, competitor_id):
-        return False, f"already have an open position in {symbol}"
+    # F6 A/B unblock (flag-gated, house-only): when enabled, distinct house
+    # strategies may hold concurrent positions in the same symbol so 1-min and
+    # 5-min variants don't block each other. Default OFF => one slot per symbol.
+    slot_strategy = (strategy if (HOUSE_STRATEGY_KEYED_SLOTS and competitor_id is None)
+                     else None)
+    if has_open_position(symbol, competitor_id, strategy=slot_strategy):
+        in_sym = f"{symbol}" + (f" [{strategy}]" if slot_strategy else "")
+        return False, f"already have an open position in {in_sym}"
 
     if signals_for_symbol_today(symbol, competitor_id) >= limits.max_signals_per_symbol_per_day:
         return False, f"already traded {symbol} max times today"

@@ -64,7 +64,7 @@ def _pass_upstream(monkeypatch):
     monkeypatch.setattr(risk, "kill_engaged_today", lambda c=None: False)
     monkeypatch.setattr(risk, "todays_realized_pnl", lambda c=None: Decimal("0"))
     monkeypatch.setattr(risk, "open_paper_positions", lambda c=None: 0)
-    monkeypatch.setattr(risk, "has_open_position", lambda s, c=None: False)
+    monkeypatch.setattr(risk, "has_open_position", lambda s, c=None, **kw: False)
     monkeypatch.setattr(risk, "signals_for_symbol_today", lambda s, c=None: 0)
 
 
