@@ -22,9 +22,9 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from helm.config import (
-    HOUSE_STRATEGY_KEYED_SLOTS,
     HOUSE_TRADE_FILTER,
     dynamic_position_cap,
+    live_flag,
     live_risk_limits,
 )
 from helm.data.store import conn
@@ -190,8 +190,8 @@ def evaluate(
     # F6 A/B unblock (flag-gated, house-only): when enabled, distinct house
     # strategies may hold concurrent positions in the same symbol so 1-min and
     # 5-min variants don't block each other. Default OFF => one slot per symbol.
-    slot_strategy = (strategy if (HOUSE_STRATEGY_KEYED_SLOTS and competitor_id is None)
-                     else None)
+    slot_strategy = (strategy if (live_flag("HOUSE_STRATEGY_KEYED_SLOTS")
+                                  and competitor_id is None) else None)
     if has_open_position(symbol, competitor_id, strategy=slot_strategy):
         in_sym = f"{symbol}" + (f" [{strategy}]" if slot_strategy else "")
         return False, f"already have an open position in {in_sym}"

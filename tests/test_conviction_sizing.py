@@ -45,12 +45,13 @@ def _insert_signal() -> int:
 # ── multiplier math ────────────────────────────────────────────────
 
 def test_conviction_mult_endpoints_and_clamp():
-    assert _conviction_mult(config.CONVICTION_FLOOR) == config.CONVICTION_SIZE_MIN_MULT
-    assert _conviction_mult(Decimal("1")) == Decimal("1")
+    floor, mm = config.CONVICTION_FLOOR, config.CONVICTION_SIZE_MIN_MULT
+    assert _conviction_mult(floor, floor, mm) == mm
+    assert _conviction_mult(Decimal("1"), floor, mm) == Decimal("1")
     # monotonic in between; clamped below the floor
-    mid = _conviction_mult((config.CONVICTION_FLOOR + Decimal("1")) / 2)
-    assert config.CONVICTION_SIZE_MIN_MULT < mid < Decimal("1")
-    assert _conviction_mult(Decimal("0.0")) == config.CONVICTION_SIZE_MIN_MULT
+    mid = _conviction_mult((floor + Decimal("1")) / 2, floor, mm)
+    assert mm < mid < Decimal("1")
+    assert _conviction_mult(Decimal("0.0"), floor, mm) == mm
 
 
 # ── flag OFF: identical to today ───────────────────────────────────
@@ -67,7 +68,7 @@ def test_flag_off_low_conviction_still_trades(monkeypatch):
 # ── flag ON: floor-skip + scaling ──────────────────────────────────
 
 def test_flag_on_below_floor_skips(monkeypatch):
-    monkeypatch.setattr(pe, "CONVICTION_SIZING_ENABLED", True)
+    monkeypatch.setattr(pe, "live_flag", lambda name: True)
     sid = _insert_signal()
     res = execute_signal(sid, actor="t", conviction=Decimal("0.40"))  # < 0.55 floor
     assert res.ok is False and "low_conviction" in res.message
@@ -78,7 +79,7 @@ def test_flag_on_below_floor_skips(monkeypatch):
 
 def test_flag_on_scales_cap(monkeypatch):
     """High conviction sizes larger than low conviction (same wallet/entry)."""
-    monkeypatch.setattr(pe, "CONVICTION_SIZING_ENABLED", True)
+    monkeypatch.setattr(pe, "live_flag", lambda name: True)
     seen = {}
     real_cap = pe.dynamic_position_cap
 

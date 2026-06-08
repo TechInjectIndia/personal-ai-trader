@@ -256,6 +256,56 @@ def live_wallet_config() -> WalletConfig:
     )
 
 
+# --- Live-toggleable feature flags + tunables (dashboard Control Center) ---
+# Same pattern as live_risk_limits: the module constants above are the DEFAULT;
+# a row in the Postgres `settings` table overrides at runtime (next cron tick,
+# no PM2 restart). Consumers call live_flag()/live_tunable() at the USE site
+# (NOT at import), so with no override the value equals the constant and
+# behaviour is byte-identical to today. Strategy-internal constants
+# (MIN_TARGET_PCT, CONTEXT_SIGNAL_THRESHOLD, MEANREV_WIDEN_OR_DROP) are NOT here:
+# strategies must stay pure (no DB), so those remain code+PM2-reload (shown
+# read-only in the UI).
+EDITABLE_FLAG_KEYS: tuple[str, ...] = (
+    "CONVICTION_SIZING_ENABLED",
+    "CONTEXT_SIGNALS_ENABLED",
+    "HOUSE_STRATEGY_KEYED_SLOTS",
+)
+EDITABLE_TUNABLE_KEYS: tuple[str, ...] = (
+    "MIN_EDGE_TO_COST",
+    "CONVICTION_FLOOR",
+    "CONVICTION_SIZE_MIN_MULT",
+)
+_FLAG_DEFAULTS: dict[str, bool] = {
+    "CONVICTION_SIZING_ENABLED": CONVICTION_SIZING_ENABLED,
+    "CONTEXT_SIGNALS_ENABLED": CONTEXT_SIGNALS_ENABLED,
+    "HOUSE_STRATEGY_KEYED_SLOTS": HOUSE_STRATEGY_KEYED_SLOTS,
+}
+_TUNABLE_DEFAULTS: dict[str, Decimal] = {
+    "MIN_EDGE_TO_COST": MIN_EDGE_TO_COST,
+    "CONVICTION_FLOOR": CONVICTION_FLOOR,
+    "CONVICTION_SIZE_MIN_MULT": CONVICTION_SIZE_MIN_MULT,
+}
+_TRUTHY = {"true", "1", "yes", "on"}
+
+
+def live_flag(name: str) -> bool:
+    """Live value of a boolean feature flag (settings override else code default)."""
+    from helm.data.store import all_settings  # local: avoid circular import
+
+    v = all_settings().get(name)
+    if v is None:
+        return bool(_FLAG_DEFAULTS[name])
+    return str(v).strip().strip('"').lower() in _TRUTHY
+
+
+def live_tunable(name: str) -> Decimal:
+    """Live value of a Decimal tunable (settings override else code default)."""
+    from helm.data.store import all_settings  # local: avoid circular import
+
+    v = all_settings().get(name)
+    return Decimal(str(v)) if v is not None else _TUNABLE_DEFAULTS[name]
+
+
 # --- Polling ---
 TICK_POLL_SECONDS = 30          # how often poll_market.py samples LTP
 SCAN_EVERY_MINUTES = 5          # how often scan_signals.py runs

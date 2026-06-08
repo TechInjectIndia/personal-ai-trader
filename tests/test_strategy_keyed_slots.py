@@ -58,7 +58,7 @@ def test_symbol_keyed_blocks_any_strategy():
 
 def test_evaluate_flag_off_is_symbol_keyed(monkeypatch):
     """Flag OFF (default): a different strategy is still blocked by the open slot."""
-    monkeypatch.setattr(risk, "HOUSE_STRATEGY_KEYED_SLOTS", False)
+    monkeypatch.setattr(risk, "live_flag", lambda name: False)
     monkeypatch.setattr(risk, "kill_engaged_today", lambda c=None: False)
     monkeypatch.setattr(risk, "todays_realized_pnl", lambda c=None: Decimal("0"))
     monkeypatch.setattr(risk, "open_paper_positions", lambda c=None: 0)
@@ -70,7 +70,7 @@ def test_evaluate_flag_off_is_symbol_keyed(monkeypatch):
 
 def test_evaluate_flag_on_allows_other_strategy(monkeypatch):
     """Flag ON: a different house strategy may open concurrently in the symbol."""
-    monkeypatch.setattr(risk, "HOUSE_STRATEGY_KEYED_SLOTS", True)
+    monkeypatch.setattr(risk, "live_flag", lambda name: True)
     monkeypatch.setattr(risk, "kill_engaged_today", lambda c=None: False)
     monkeypatch.setattr(risk, "todays_realized_pnl", lambda c=None: Decimal("0"))
     monkeypatch.setattr(risk, "open_paper_positions", lambda c=None: 0)

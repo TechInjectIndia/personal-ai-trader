@@ -32,10 +32,10 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from helm.config import (
-    CONTEXT_SIGNALS_ENABLED,
     TRADING_END,
     TRADING_START,
     WATCHLIST,
+    live_flag,
 )
 from helm.context_client import get_context
 from helm.data.store import conn, insert_audit, resample_candles
@@ -84,12 +84,13 @@ def main() -> int:
     # actually checked and what fired vs didn't.
     checks: list[dict] = []
     fired_summaries: list[dict] = []
+    context_signals_on = live_flag("CONTEXT_SIGNALS_ENABLED")
     with conn() as c:
         for strat in ACTIVE:
             # F7-P3c: context-signal strategies are SKIPPED entirely unless the
             # flag is on → zero new behaviour/calls when off (provably inert).
             requires_ctx = getattr(strat, "requires_context", False)
-            if requires_ctx and not CONTEXT_SIGNALS_ENABLED:
+            if requires_ctx and not context_signals_on:
                 continue
             for symbol in WATCHLIST:
                 # Feed each strategy candles at ITS timeframe. bar_minutes<=1

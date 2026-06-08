@@ -27,12 +27,10 @@ from zoneinfo import ZoneInfo
 
 from helm.charges import round_trip_breakdown
 from helm.config import (
-    CONVICTION_FLOOR,
-    CONVICTION_SIZE_MIN_MULT,
-    CONVICTION_SIZING_ENABLED,
-    MIN_EDGE_TO_COST,
     dynamic_position_cap,
+    live_flag,
     live_risk_limits,
+    live_tunable,
 )
 from helm.data.store import conn, first_candle_open_at_or_after, insert_audit
 from helm.instrument import log_event
@@ -60,15 +58,14 @@ def _edge_to_cost(side: str, qty: int, entry: Decimal, target: Decimal) -> Decim
     return (gross_reward / exp_cost) if exp_cost > 0 else Decimal("0")
 
 
-def _conviction_mult(conviction: Decimal) -> Decimal:
-    """F5: linear cap multiplier ramping from CONVICTION_SIZE_MIN_MULT at the
-    floor to 1.0 at conviction=1.0, clamped. Only used when sizing is enabled."""
-    span = Decimal("1") - CONVICTION_FLOOR
+def _conviction_mult(conviction: Decimal, floor: Decimal, min_mult: Decimal) -> Decimal:
+    """F5: linear cap multiplier ramping from `min_mult` at `floor` to 1.0 at
+    conviction=1.0, clamped. Only used when sizing is enabled."""
+    span = Decimal("1") - floor
     if span <= 0:
         return Decimal("1")
-    m = (CONVICTION_SIZE_MIN_MULT
-         + (Decimal("1") - CONVICTION_SIZE_MIN_MULT) * (conviction - CONVICTION_FLOOR) / span)
-    return max(CONVICTION_SIZE_MIN_MULT, min(Decimal("1"), m))
+    m = min_mult + (Decimal("1") - min_mult) * (conviction - floor) / span
+    return max(min_mult, min(Decimal("1"), m))
 
 
 def execute_signal(
@@ -130,11 +127,13 @@ def execute_signal(
         # by conviction and skip sub-floor convictions. OFF / no conviction /
         # explicit qty => byte-identical to today.
         conviction_block = False
-        if CONVICTION_SIZING_ENABLED and conviction is not None and qty is None:
-            if conviction < CONVICTION_FLOOR:
+        conviction_floor = live_tunable("CONVICTION_FLOOR")
+        if live_flag("CONVICTION_SIZING_ENABLED") and conviction is not None and qty is None:
+            if conviction < conviction_floor:
                 conviction_block = True
             else:
-                effective_cap = effective_cap * _conviction_mult(conviction)
+                effective_cap = effective_cap * _conviction_mult(
+                    conviction, conviction_floor, live_tunable("CONVICTION_SIZE_MIN_MULT"))
         budget = min(effective_cap, wallet.available)
         if qty is None:
             sized_qty = int(budget // entry) if budget >= entry else 0
@@ -144,7 +143,7 @@ def execute_signal(
         target = sig["target"]
         if conviction_block:
             allowed, reason = False, (
-                f"low_conviction (conf={conviction:.2f} < floor {CONVICTION_FLOOR})"
+                f"low_conviction (conf={conviction:.2f} < floor {conviction_floor})"
             )
         elif sized_qty <= 0:
             # Wallet can't afford even a single share. Skip cleanly so the
@@ -155,14 +154,14 @@ def execute_signal(
             )
         elif target is not None and (
             e2c := _edge_to_cost(sig["side"], sized_qty, entry, Decimal(target))
-        ) < MIN_EDGE_TO_COST:
+        ) < (min_e2c := live_tunable("MIN_EDGE_TO_COST")):
             # F2: target move too small relative to round-trip cost — a
             # guaranteed net loser even if right. Skip via the shared SKIP tail.
             # (target=None signals can't be E2C-evaluated → fall through.)
             allowed, reason = False, f"below_min_edge_to_cost (E2C={e2c:.2f})"
             log_event("f2_min_edge_gate", "blocked", signal_id=sig["id"],
                       symbol=sig["symbol"], qty=sized_qty, entry=entry,
-                      target=target, e2c=e2c, min_required=MIN_EDGE_TO_COST)
+                      target=target, e2c=e2c, min_required=min_e2c)
         else:
             allowed, reason = risk.evaluate(sig["symbol"], sig["side"], sized_qty, entry,
                                             strategy=sig.get("strategy"))
