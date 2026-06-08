@@ -50,6 +50,16 @@ IST = ZoneInfo("Asia/Kolkata")
 PM_MAX_TOKENS = 2000
 PM_TEMPERATURE = 0.2
 
+# Hard cap on how many open proposals the weekly review feeds the LLM. The
+# prompt serialises every open proposal (title + rationale + proposed_change +
+# evidence) to JSON; an unbounded backlog can blow past the kernel's per-argv
+# size limit and crash the claude CLI call (E2BIG). 60 is comfortably more than
+# any single week produces yet keeps the prompt well inside the CLI's reach.
+# Recurrence counts are computed over this same capped set, so a very large
+# backlog slightly undercounts recurrence — acceptable, and the backlog-drain
+# path exists to chew through anything that overflows.
+PM_MAX_OPEN_PROPOSALS = 60
+
 # Closed set the engineer knows how to act on. Anything else lands as
 # `needs_human` and surfaces for manual handling. The first group are
 # house/code task types (commit + pytest); the last two are freestyle-only
@@ -370,8 +380,9 @@ def _open_proposals_30d(competitor_id: str) -> list[dict]:
               AND p.created_ts >= now() - interval '30 days'
               AND p.competitor_id = %s
             ORDER BY p.created_ts DESC
+            LIMIT %s
             """,
-            (competitor_id,),
+            (competitor_id, PM_MAX_OPEN_PROPOSALS),
         ))
 
     counts: dict[str, int] = defaultdict(int)

@@ -50,6 +50,17 @@ DEFAULT_BACKEND = "claude"
 # Sonnet 4.6). Decider calls return in 5-10s so they never approach this.
 CLI_TIMEOUT_S = 300
 
+# Per-argument size ceiling for the claude adapter. The Linux kernel caps a
+# single argv entry at MAX_ARG_STRLEN = 128 KiB (PAGE_SIZE * 32); a positional
+# prompt above that makes execve() fail with E2BIG, surfacing as an OSError
+# before the subprocess ever starts. The PM weekly-review/backlog prompts (24+
+# open proposals + retros + engineer history serialised to JSON) can exceed it.
+# We keep a conservative margin below 128 KiB and, when the prompt is over this
+# size, feed it on stdin instead (the claude CLI reads the prompt from stdin
+# when no positional prompt is given — verified live). Normal-size prompts keep
+# the exact original command shape (positional `-p <prompt>`, no stdin).
+CLAUDE_MAX_PROMPT_BYTES = 96 * 1024
+
 VERDICT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -236,8 +247,16 @@ def _adapter_claude(system: str, user: str, *, model: str, schema: dict,
     # --tools "" already removes all tools so no permission prompts can occur.
     # --dangerously-skip-permissions belt-and-suspenders: ensures the harness
     # never blocks on a permission decision in headless mode.
+    #
+    # The user prompt is normally passed as the positional after `-p`. When it
+    # is too large for a single argv entry (kernel E2BIG → OSError), we instead
+    # feed it on stdin: the claude CLI reads the prompt from stdin when no
+    # positional prompt is given. Build the base command WITHOUT the positional,
+    # then either splice it back at its original index (normal path → byte-for-
+    # byte the original command, no stdin) or route it through `input=`.
+    oversized = len(user.encode("utf-8")) > CLAUDE_MAX_PROMPT_BYTES
     cmd = [
-        cli, "-p", user,
+        cli, "-p",
         "--system-prompt", injected_system,
         "--output-format", "json",
         "--model", model,
@@ -247,9 +266,18 @@ def _adapter_claude(system: str, user: str, *, model: str, schema: dict,
         "--dangerously-skip-permissions",
         "--json-schema", json.dumps(schema),
     ]
+    stdin_input: str | None
+    if oversized:
+        stdin_input = user
+    else:
+        # Reinsert the positional prompt immediately after `-p` so the command
+        # is identical to the original single-argument shape; no stdin is sent.
+        cmd.insert(2, user)
+        stdin_input = None
     try:
         proc = subprocess.run(
             cmd,
+            input=stdin_input,
             capture_output=True,
             text=True,
             timeout=timeout_s,
@@ -257,6 +285,11 @@ def _adapter_claude(system: str, user: str, *, model: str, schema: dict,
         )
     except subprocess.TimeoutExpired as exc:
         raise LLMError(f"claude CLI timeout after {timeout_s}s") from exc
+    except OSError as exc:
+        # E2BIG (argv too long) and other exec-time failures surface here; map
+        # to the project error so callers' fail-closed paths handle it instead
+        # of an uncaught OSError crashing the run.
+        raise LLMError(f"claude CLI exec failed: {exc}") from exc
 
     if proc.returncode != 0:
         raise LLMError(
