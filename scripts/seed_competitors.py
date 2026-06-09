@@ -41,7 +41,7 @@ from helm.data.store import conn, init_schema, insert_audit
 # a re-run never resets a live wallet's status back to paused).
 COHORT: list[tuple[str, str, str, str, str, str]] = [
     (
-        "gemini-momentum", "Gemini (Momentum)", "gemini", "gemini-2.5-flash",
+        "gemini-momentum", "Gemini (Momentum)", "gemini", "gemini-3-flash-preview",
         "Momentum breakout chaser: buys decisive intraday breakouts with "
         "visible follow-through on the 1-min tape; tight stops just under the "
         "breakout level; lets winners run toward an extended target.",

@@ -75,6 +75,14 @@ _OPENROUTER_MODELS: dict[str, str] = {
     "nemotron": "nvidia/nemotron-3-super-120b-a12b:free",
 }
 
+# CLI backends whose model id is NOT a claude id. DEFAULT_MODEL is a claude id,
+# which a non-claude CLI rejects (e.g. gemini under Vertex 404s / exits 1 on it).
+# Mirror the seeded competitors' model columns.
+_CLI_MODELS: dict[str, str] = {
+    "gemini": "gemini-3-flash-preview",
+    "opencode": "opencode/big-pickle",
+}
+
 # Substrings that, when present in an error, indicate the CLI ran but wants
 # an interactive login rather than a transport/output failure.
 _AUTH_HINTS = (
@@ -108,7 +116,7 @@ def _classify(backend: str, timeout_s: int) -> tuple[str, str]:
     else:
         if shutil.which(_BINARIES[backend]) is None:
             return "NOT-INSTALLED", f"`{_BINARIES[backend]}` not on PATH"
-        model = llm.DEFAULT_MODEL
+        model = _CLI_MODELS.get(backend, llm.DEFAULT_MODEL)
 
     adapter = llm.CLI_ADAPTERS[backend]
     started = time.monotonic()

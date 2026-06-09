@@ -327,7 +327,10 @@ def _adapter_gemini(system: str, user: str, *, model: str, schema: dict,
     the repo, gemini otherwise exits 55 ("not running in a trusted directory")."""
     cli = _resolve_cli("gemini", "GEMINI_CLI_PATH")
     prompt = _build_generic_prompt(system, user)
-    cmd = [cli, "--skip-trust", "-p", prompt]
+    # Pin the model: under Vertex (GOOGLE_GENAI_USE_VERTEXAI) the CLI's default
+    # is a gemini-3 preview the project can't access, so pass the competitor's
+    # configured model (e.g. gemini-2.5-flash) explicitly.
+    cmd = [cli, "--skip-trust", "-m", model or "gemini-2.5-flash", "-p", prompt]
     stdout = _run_cli(cmd, name="gemini", timeout_s=timeout_s)
     return _parse_json(stdout)
 
