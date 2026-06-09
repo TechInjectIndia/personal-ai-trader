@@ -26,8 +26,11 @@ from helm.config import (
 )
 from helm.kite_health import token_health
 from helm.wallet import wallet_state
+from helm.dashboard.attention import attention_items
 from helm.dashboard.format import IST, fmt_clock, fmt_ist, wrapped_table
-from helm.dashboard.theme import apply_theme, kpi_card, kpi_grid, page_header, pill
+from helm.dashboard.theme import (
+    apply_theme, attention_banner, kpi_card, kpi_grid, page_header, pill,
+)
 from helm.data.store import conn
 
 REPO_ROOT = Path(__file__).resolve().parents[3]  # views/ → dashboard/ → helm/ → repo root
@@ -109,6 +112,12 @@ def fetch_token_health():
     fires when a *due* weekday refresh is actually missing or failed.
     """
     return token_health()
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def fetch_attention():
+    """Action Center items (autonomy, review-pending flags, queued asks)."""
+    return attention_items()
 
 
 @st.cache_data(ttl=15, show_spinner=False)
@@ -281,6 +290,12 @@ elif health["level"] == "stale":
         f"failed silently — check logs/kite_login.log or run "
         f"`python scripts/kite_auto_login.py`."
     )
+
+# ───────────────────────── action center ─────────────────────────
+# The single place the desk tells the human "do this" — review-pending feature
+# go/no-go calls, unsafe-config warnings, and any explicitly-queued ask. Sits
+# above the wallet so it's the first thing seen; renders nothing when all-clear.
+attention_banner(fetch_attention())
 
 state = fetch_bot_state()
 now_ist = datetime.now(IST)

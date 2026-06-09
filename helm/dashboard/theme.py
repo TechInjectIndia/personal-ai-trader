@@ -263,6 +263,47 @@ hr, [data-testid="stDivider"] hr { border-color: #1F2733 !important; }
 .helm-hero-meta b { color: #C7D2FE; font-weight: 600; }
 .helm-hero-side { display: flex; flex-direction: column; align-items: flex-end; gap: 0.5rem; }
 
+/* ── action center (what needs the human) ─────────────────────────── */
+.helm-attn {
+  border-radius: 16px; padding: 1.05rem 1.25rem; margin: 0.2rem 0 1.0rem;
+  border: 1px solid #2A3346;
+  background: linear-gradient(180deg, #161B26 0%, #10141D 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 10px 28px rgba(0,0,0,0.32);
+}
+.helm-attn-head {
+  display: flex; align-items: center; gap: 0.55rem; margin-bottom: 0.75rem;
+  font-size: 0.74rem; font-weight: 700; letter-spacing: 0.13em;
+  text-transform: uppercase; color: #C7D2FE;
+}
+.helm-attn-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 1.35rem; height: 1.35rem; padding: 0 0.4rem; border-radius: 999px;
+  background: #6366F1; color: #fff; font-size: 0.72rem; font-weight: 800;
+}
+.helm-attn-item {
+  display: flex; gap: 0.8rem; padding: 0.7rem 0;
+  border-top: 1px solid #1E2532;
+}
+.helm-attn-item:first-of-type { border-top: 0; }
+.helm-attn-rail { width: 4px; border-radius: 4px; flex: 0 0 4px; }
+.helm-attn-rail--action { background: #818CF8; }
+.helm-attn-rail--warn   { background: #FBBF24; }
+.helm-attn-rail--info   { background: #38BDF8; }
+.helm-attn-body { flex: 1; min-width: 0; }
+.helm-attn-title { font-size: 1.0rem; font-weight: 700; color: #F4F7FB; }
+.helm-attn-title .helm-attn-tag {
+  font-size: 0.62rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 0.1rem 0.4rem; border-radius: 6px; margin-left: 0.5rem; vertical-align: middle;
+}
+.helm-attn-tag--action { background: rgba(129,140,248,0.18); color: #C7D2FE; }
+.helm-attn-tag--warn   { background: rgba(251,191,36,0.16);  color: #FCD34D; }
+.helm-attn-tag--info   { background: rgba(56,189,248,0.16);  color: #7DD3FC; }
+.helm-attn-detail { color: #AEB9CC; font-size: 0.9rem; margin-top: 0.2rem; }
+.helm-attn-where  { color: #94A2B8; font-size: 0.84rem; margin-top: 0.35rem; }
+.helm-attn-where b { color: #C7D2FE; font-weight: 600; }
+.helm-attn-steps { margin: 0.4rem 0 0; padding-left: 1.1rem; color: #AEB9CC; font-size: 0.86rem; }
+.helm-attn-steps li { margin: 0.12rem 0; }
+
 /* ── status pills ─────────────────────────────────────────────────── */
 .helm-pill {
   display: inline-flex; align-items: center; gap: 0.4rem;
@@ -504,6 +545,46 @@ def pill(text: str, kind: str = "info", *, dot: bool = True) -> str:
     """
     dot_html = '<span class="dot"></span>' if dot else ""
     return f'<span class="helm-pill helm-pill--{kind}">{dot_html}{text}</span>'
+
+
+_ATTN_TAG = {"action": "Decide", "warn": "Review", "info": "FYI"}
+
+
+def attention_banner(items: list) -> None:
+    """Render the Action Center — a prominent "needs your attention" panel.
+
+    `items` is a list of ``helm.dashboard.attention.AttentionItem``. Renders
+    nothing (no empty box) when the list is empty, so an all-clear desk is
+    visually quiet.
+    """
+    if not items:
+        return
+    rows = []
+    for it in items:
+        lvl = it.level if it.level in _ATTN_TAG else "info"
+        steps = ""
+        if it.steps:
+            lis = "".join(f"<li>{html.escape(s)}</li>" for s in it.steps)
+            steps = f'<ol class="helm-attn-steps">{lis}</ol>'
+        where = (f'<div class="helm-attn-where">Go to <b>{html.escape(it.where)}</b></div>'
+                 if it.where else "")
+        rows.append(
+            f'<div class="helm-attn-item">'
+            f'<div class="helm-attn-rail helm-attn-rail--{lvl}"></div>'
+            f'<div class="helm-attn-body">'
+            f'<div class="helm-attn-title">{html.escape(it.title)}'
+            f'<span class="helm-attn-tag helm-attn-tag--{lvl}">{_ATTN_TAG[lvl]}</span></div>'
+            f'<div class="helm-attn-detail">{html.escape(it.detail)}</div>'
+            f'{where}{steps}'
+            f'</div></div>'
+        )
+    st.markdown(
+        f'<div class="helm-attn">'
+        f'<div class="helm-attn-head">⚡ Needs your attention'
+        f'<span class="helm-attn-count">{len(items)}</span></div>'
+        f'{"".join(rows)}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _initials(name: str) -> str:
