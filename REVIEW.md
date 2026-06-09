@@ -33,7 +33,7 @@ durable signals to Postgres already (audit/decisions/etc.) — the digest reads 
 | F4 bigger-move reframe (`MIN_TARGET_PCT=0.6%`) | 2026-06-08 | bigger targets raise E2C & restore payoff (momentum only) | realised E2C ≥ 3 on house book; net expectancy ↑ | every session + weekly | 🟡 watching |
 | F5 confidence↔outcome | measure 2026-06-08 | decider confidence predicts win | monotone: higher conf bucket → higher win%/net. **Gates** building conviction sizing | every session | 🟡 measuring (early +) |
 | F6 multi-timeframe (`_5m` variants) | 2026-06-08 | 5-min bars capture bigger moves vs the same fixed cost | `_5m` variants show higher E2C / better net than their 1-min twin | every session + weekly | 🟡 watching (0 trades yet); **A/B unblocked — risk-keying ON 2026-06-08** |
-| F7 Context Engine (microservice) | 2026-06-08 | external news/event context lifts decision quality where the chart can't | claude-full beats claude-blind: positive gross expectancy + E2C≥3 on context-fed decisions | weekly (after shadow) | 🟡 built, OFF by default (shadow) |
+| F7 Context Engine (microservice) | 2026-06-08 | external news/event context lifts decision quality where the chart can't | score predicts next move (digest F7 block: pearson>0, dir_hit≳55%, n≥40) → then claude-full A/B | every session (shadow live 2026-06-09) | 🟡 SHADOW ingesting (:8601 + 15min cron); URL unset = claude-blind |
 | Daily post-close cadence | 2026-06-08 | daily loop iterates safely overnight | ≥1 pm/eng/tester run per trading day; no overnight regression survives to open | every session | 🟡 watching |
 
 Legend: 🟡 watching · ⏳ landing · 🟢 graduated (proven) · 🔴 reverted/killed · 🔧 tuned.
@@ -83,10 +83,12 @@ Legend: 🟡 watching · ⏳ landing · 🟢 graduated (proven) · 🔴 reverted
 ### F7 Context Engine (decoupled microservice)
 - **Architecture:** standalone FastAPI service in `context_engine/` (own process, own `context_items`/`context_scores` tables, free yfinance-news source, `helm.llm` scorer with time-decay). The bot consumes via `helm/context_client.py` (stdlib HTTP) **only when `CONTEXT_ENGINE_URL` is set** — unset = byte-identical to today (clean A/B baseline), and any error/timeout/stale → fail-open (no context, never blocks a trade). Bot never imports `context_engine/`.
 - **Enable (A/B on):** start the service (`context_engine/run.sh`, needs `pip install -r context_engine/requirements.txt`), schedule `scripts/ingest_context.py` on cron, set `CONTEXT_ENGINE_URL=http://127.0.0.1:<port>` in `.env`. **Disable/revert:** unset the env var (instant).
-- **How to check:** `logs/instrumentation/context_engine.jsonl` (hit/miss/fail_open events) + the per-strategy/decider economics once shadow data exists. Run ≥2 weeks in SHADOW (ingest+score, flag OFF) and validate score-vs-next-move before trusting it to trade.
+- **How to check:** digest blocks **"F7 Context Engine (SHADOW) — does the news score predict the next 30-min move?"** (`dir_hit_pct`, `pearson` over `n_signal` `|score|≥0.1` pairs) + **"score coverage by symbol"**. Also `logs/instrumentation/context_engine.jsonl`.
+- **Go-live bar (flip `CONTEXT_ENGINE_URL`):** not a fixed calendar — flip when the score genuinely leads price: `pearson > 0` **and** `dir_hit_pct ≳ 55%` over `n_signal ≥ ~40` (a few trading days of `|score|≥0.1` scores). If noise, do NOT enable. This replaces the rough "~2 weeks".
 - **Live-safety verified (2026-06-08):** flag-unset → None on first line (zero path); flag-set-but-service-dead → None in ~34ms (bounded, no raise); fail-open on non-200/timeout/garbage. Decider prompt is byte-identical when context is None.
 - **Observations:**
-  - 2026-06-08 — built (service + flag-gated fail-open consumer + ingest cron + tests). Shipped OFF. Service `/health` 200, `/context/{sym}` returns neutral/stale until ingestion runs.
+  - 2026-06-08 — built (service + flag-gated fail-open consumer + ingest cron + tests). Shipped OFF.
+  - 2026-06-09 — **brought up in SHADOW.** PM2 `helm-context-engine` on :8601 (pm2 saved); ingest cron `*/15 3-10 * * 1-5`. End-to-end proven (INFY scored +0.10, CLI mode → no API $). `CONTEXT_ENGINE_URL` still UNSET = claude-blind. Validation readout added to the digest; go-live is data-gated (see bar above), queued in the dashboard Action Center (`context_engine_golive`).
 
 ### Daily post-close cadence
 - **How to check:** digest "cadence" block — pm/engineer/tester runs per day; cross-ref releases verified vs reverted.

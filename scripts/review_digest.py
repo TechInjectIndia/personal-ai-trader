@@ -76,6 +76,30 @@ BLOCKS: list[tuple[str, str]] = [
                round(avg(net_pnl_inr),1) net_exp
         FROM d GROUP BY 1 ORDER BY 1"""),
 
+    ("F7 Context Engine (SHADOW) — does the news score predict the next 30-min move?", """
+        WITH s AS (
+          SELECT cs.symbol, cs.scored_ts, cs.score::numeric sc,
+            (SELECT c.close FROM candles_1m c
+               WHERE c.symbol = cs.symbol AND c.bar_ts <= cs.scored_ts
+               ORDER BY c.bar_ts DESC LIMIT 1) p0,
+            (SELECT c.close FROM candles_1m c
+               WHERE c.symbol = cs.symbol AND c.bar_ts >= cs.scored_ts + interval '30 minutes'
+               ORDER BY c.bar_ts ASC LIMIT 1) p1
+          FROM context_scores cs),
+        p AS (SELECT sc, (p1 - p0) / NULLIF(p0, 0) ret
+              FROM s WHERE p0 IS NOT NULL AND p1 IS NOT NULL)
+        SELECT count(*) n_pairs,
+               count(*) FILTER (WHERE abs(sc) >= 0.1) n_signal,
+               round(100.0 * avg(((sc > 0) = (ret > 0))::int)
+                     FILTER (WHERE abs(sc) >= 0.1), 1) dir_hit_pct,
+               round(corr(sc::float8, ret::float8)::numeric, 3) pearson,
+               round(avg(abs(ret)) * 100, 3) avg_abs_move_pct
+        FROM p"""),
+
+    ("F7 Context Engine — score coverage by symbol (rows accumulating in shadow)", """
+        SELECT symbol, count(*) scores, round(avg(score), 3) avg_score, max(scored_ts) latest
+        FROM context_scores GROUP BY 1 ORDER BY 1"""),
+
     ("Daily post-close loop cadence — runs per day (5d)", """
         SELECT date_trunc('day', started_ts AT TIME ZONE 'Asia/Kolkata')::date d,
                agent, outcome, count(*) n
