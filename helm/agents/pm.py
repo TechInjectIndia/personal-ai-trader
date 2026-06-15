@@ -1295,4 +1295,183 @@ def run_backlog_drain(competitor_id: str, *, model: str | None = None,
         }
 
 
-__all__ = ["run_weekly_review", "run_backlog_drain"]
+# ─── cluster promotion (Self-Improvement Loop v2, FRD G2 runtime) ────────
+# The claim that closes the loop: turn the top-ranked OPEN proposal_cluster for
+# a surface into ONE typed Engineer task, then mark the cluster in_flight. The
+# existing Engineer/Tester crons build + verify it; reconcile_cluster_statuses
+# (helm.agents.clustering) later flips the cluster to verified or reopens it.
+#
+# This is the automated form of the manual cap-clamp fix: an escalated cluster
+# (a freestyle-surfaced shared-code bug) lands on the 'house' surface and is
+# promoted to a house code task — insight that previously had no path to ship.
+
+PM_CLUSTER_TASK_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "task_type": {"type": "string", "enum": list(VALID_ENGINEER_TASK_TYPES)},
+        "title": {"type": "string"},
+        "rationale": {"type": "string"},
+        "priority": {"type": "integer", "minimum": 1, "maximum": 5},
+        "spec": {"type": "object"},
+        "deferred_reason": {"type": "string"},
+    },
+    "required": ["task_type", "title", "rationale", "priority", "spec"],
+}
+
+
+def _cluster_member_views(cluster_id: int, limit: int = 8) -> list[dict]:
+    """A few member proposals of a cluster — the recurring evidence the PM uses
+    to synthesise one durable fix instead of a one-trade patch."""
+    with conn() as c:
+        rows = list(c.execute(
+            "SELECT id, title, rationale, proposed_change, confidence "
+            "FROM improvement_proposals WHERE cluster_id = %s "
+            "ORDER BY confidence DESC NULLS LAST, created_ts DESC LIMIT %s",
+            (cluster_id, limit),
+        ))
+    return [{"id": int(r["id"]), "title": r["title"], "rationale": r["rationale"],
+             "proposed_change": r["proposed_change"], "confidence": r["confidence"]}
+            for r in rows]
+
+
+def _build_cluster_prompt(agent: dict, goal: GoalBrief, cluster: dict,
+                          members: list[dict]) -> str:
+    is_house = agent["id"] == HOUSE_COMPETITOR_ID
+    valid_types = list(
+        HOUSE_ENGINEER_TASK_TYPES if is_house else FREESTYLE_ENGINEER_TASK_TYPES
+    ) + ["needs_human"]
+    payload = {
+        "now_ist": datetime.now(IST).strftime("%Y-%m-%d %H:%M"),
+        "mode": "cluster_promotion",
+        "agent": agent,
+        "valid_task_types_for_this_agent": valid_types,
+        "goal_brief": goal.to_prompt_dict(),
+        "cluster": {
+            "id": cluster["id"], "theme": cluster["theme"], "layer": cluster["layer"],
+            "recurrence": cluster["recurrence"], "escalated": cluster["escalated"],
+            "origin_competitor_id": cluster.get("origin_competitor_id"),
+            "representative": {
+                "title": cluster.get("rep_title"),
+                "rationale": cluster.get("rep_rationale"),
+                "proposed_change": cluster.get("rep_proposed_change"),
+                "category": cluster.get("rep_category"),
+            },
+        },
+        "member_proposals": members,
+        "notes": (
+            "CLUSTER PROMOTION. The cluster below is the highest-priority "
+            f"DISTINCT idea for this agent — {cluster['recurrence']} separate "
+            "proposals restated it. Synthesise ONE typed Engineer task that "
+            "ships the durable fix for the WHOLE cluster (not a single trade's "
+            "patch). Use the exact spec shape for the task_type (see the system "
+            "prompt). Quote the recurrence count in the rationale. "
+            + ("This cluster is on the HOUSE surface — use a code task_type."
+               + (" It was ESCALATED from a freestyle agent that can't touch "
+                  "shared house code; you ARE the house owner — ship it."
+                  if cluster["escalated"] else "")
+               if is_house else
+               "This is a FREESTYLE competitor — use ONLY persona_edit / "
+               "strategy_config_edit / needs_human.")
+            + " If you genuinely cannot map it to a valid task_type, return "
+            "task_type='needs_human' with a reason in spec."
+        ),
+    }
+    return ("Synthesise ONE typed task that ships the fix for this recurring "
+            "cluster.\n\n```json\n" + json.dumps(payload, indent=2, default=str)
+            + "\n```")
+
+
+def run_cluster_promotion(surface: str = HOUSE_COMPETITOR_ID, *,
+                          model: str | None = None, mode: str | None = None,
+                          force: bool = False) -> dict:
+    """Promote one cluster on `surface` to a typed Engineer task.
+
+    `surface` is 'house' / HOUSE_COMPETITOR_ID for the house book, else a
+    competitor_id. Respects the same one-change-in-flight backpressure as the
+    weekly review (skippable with force). No-ops cleanly when the surface has no
+    open clusters. Records an `agent_runs` row; on success creates one task and
+    marks the cluster in_flight.
+    """
+    from helm.agents.clustering import next_cluster_for_surface, set_cluster_status
+
+    model = model or os.environ.get("AGENT_MODEL", AGENT_MODEL_DEFAULT)
+    mode = (mode or os.environ.get("LLM_MODE", "cli")).strip().lower()
+    # Normalise: clusters store the literal 'house' for the house surface; the
+    # task/competitor + agent descriptor use HOUSE_COMPETITOR_ID.
+    cluster_surface = "house" if surface in ("house", HOUSE_COMPETITOR_ID) else surface
+    agent_id = HOUSE_COMPETITOR_ID if cluster_surface == "house" else surface
+    is_house = agent_id == HOUSE_COMPETITOR_ID
+
+    def _noop(run, reason: str, **trace) -> dict:
+        run.outcome = "noop"
+        run.summary = f"[{agent_id}] cluster promotion — {reason}"
+        run.add_trace(deferred=True, reason=reason, surface=cluster_surface, **trace)
+        return {"run_id": run.run_id, "competitor_id": agent_id,
+                "task_created": None, "cluster_id": None, "deferred": True,
+                "reason": reason}
+
+    with record_run("pm", "cluster_promotion", model=model, llm_mode=mode,
+                    competitor_id=agent_id) as run:
+        unverified = _unverified_for_agent(agent_id)
+        if unverified and not force:
+            return _noop(run, f"{len(unverified)} unverified change(s) in flight",
+                         unverified_ids=[r["id"] for r in unverified])
+
+        cluster = next_cluster_for_surface(cluster_surface)
+        if cluster is None:
+            return _noop(run, "no open clusters on this surface")
+
+        agent = _agent_descriptor(agent_id)
+        goal = build_goal_brief(competitor_id=agent_id)
+        members = _cluster_member_views(int(cluster["id"]))
+        run.add_trace(surface=cluster_surface, cluster_id=int(cluster["id"]),
+                      theme=cluster["theme"], recurrence=cluster["recurrence"],
+                      escalated=cluster["escalated"])
+
+        user = _build_cluster_prompt(agent, goal, cluster, members)
+        try:
+            parsed = complete_json(SYSTEM_PROMPT, user,
+                                   schema=PM_CLUSTER_TASK_SCHEMA,
+                                   model=model, mode=mode,
+                                   max_tokens=PM_MAX_TOKENS, temperature=PM_TEMPERATURE)
+        except LLMError as exc:
+            run.summary = f"LLM error: {str(exc)[:200]}"
+            run.add_trace(llm_error=str(exc)[:500])
+            raise
+
+        suggestion = {"action": "create_task", **parsed}
+        ok, why = _validate_suggestion(suggestion, is_house=is_house)
+        if not ok:
+            return _noop(run, f"invalid task synthesis: {why}",
+                         cluster_id=int(cluster["id"]), raw=parsed)
+
+        try:
+            task_id = create_task(
+                created_by="pm",
+                title=str(parsed["title"]).strip()[:200],
+                rationale=str(parsed["rationale"]).strip()[:2000],
+                task_type=parsed["task_type"],
+                spec=parsed["spec"],
+                proposal_id=cluster.get("representative_proposal_id"),
+                priority=int(parsed.get("priority", 3)),
+                competitor_id=agent_id,
+            )
+        except ValueError as exc:
+            return _noop(run, f"create_task rejected: {exc}",
+                         cluster_id=int(cluster["id"]))
+
+        set_cluster_status(int(cluster["id"]), "in_flight",
+                           note=f"promoted to task {task_id}")
+        run.summary = (f"[{agent_id}] promoted cluster {cluster['id']} "
+                       f"(×{cluster['recurrence']}) → task {task_id}")
+        run.add_trace(task_created=task_id, cluster_id=int(cluster["id"]))
+        insert_audit("agents", "cluster_promoted",
+                     {"run_id": run.run_id, "cluster_id": int(cluster["id"]),
+                      "task_id": task_id, "surface": cluster_surface,
+                      "escalated": cluster["escalated"]})
+        return {"run_id": run.run_id, "competitor_id": agent_id,
+                "task_created": task_id, "cluster_id": int(cluster["id"]),
+                "deferred": False, "reason": ""}
+
+
+__all__ = ["run_weekly_review", "run_backlog_drain", "run_cluster_promotion"]

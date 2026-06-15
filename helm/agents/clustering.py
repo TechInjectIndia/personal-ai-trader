@@ -447,11 +447,71 @@ def push_escalation_alerts() -> int:
     return pushed
 
 
+def reconcile_cluster_statuses() -> dict:
+    """Close the loop for in_flight clusters by their task's outcome.
+
+    Linkage is task.proposal_id → improvement_proposals.cluster_id (the promoted
+    task carries the cluster's representative proposal id). For each in_flight
+    cluster, inspect its linked task(s) + release(s):
+
+      * a task that is 'done' AND either applied a config version (no release) or
+        produced a VERIFIED release → cluster 'verified' + members 'applied'.
+      * all linked tasks terminal-failed (failed/cancelled) or their release was
+        reverted, none still pending → cluster reopened 'open' (insight survives;
+        it'll be re-promoted later).
+      * otherwise (still building / awaiting Tester) → left in_flight.
+
+    Returns {verified: [...], reopened: [...]}.
+    """
+    verified: list[int] = []
+    reopened: list[int] = []
+    with conn() as c:
+        in_flight = list(c.execute(
+            "SELECT id FROM proposal_clusters WHERE status = 'in_flight'"))
+        for clu in in_flight:
+            cid = int(clu["id"])
+            rows = list(c.execute(
+                """
+                SELECT t.status AS tstatus, t.release_id, r.status AS rstatus
+                FROM agent_tasks t
+                LEFT JOIN releases r ON r.id = t.release_id
+                WHERE t.proposal_id IN (
+                    SELECT id FROM improvement_proposals WHERE cluster_id = %s)
+                """,
+                (cid,),
+            ))
+            if not rows:
+                continue
+            states = []
+            for t in rows:
+                if t["tstatus"] == "done" and (
+                        t["release_id"] is None or t["rstatus"] == "verified"):
+                    states.append("ok")
+                elif t["tstatus"] in ("failed", "cancelled") or t["rstatus"] == "reverted":
+                    states.append("fail")
+                else:
+                    states.append("pending")
+            if "ok" in states:
+                verified.append(cid)
+            elif states and all(s == "fail" for s in states):
+                reopened.append(cid)
+    # status writes outside the read loop (set_cluster_status opens its own conn)
+    for cid in verified:
+        set_cluster_status(cid, "verified", note="task verified")
+        with conn() as c:
+            c.execute("UPDATE improvement_proposals SET status = 'applied', "
+                      "status_note = 'cluster verified', status_ts = now() "
+                      "WHERE cluster_id = %s AND status = 'open'", (cid,))
+    for cid in reopened:
+        set_cluster_status(cid, "open", note="task failed/reverted — reopened")
+    return {"verified": verified, "reopened": reopened}
+
+
 __all__ = [
     "normalise_confidence", "decay_confidence", "cluster_rank_score",
     "category_to_layer", "classify_surface",
     "open_clusters", "create_cluster", "recompute_cluster", "attach_proposal",
     "assign_and_persist", "rank_open_clusters",
     "set_cluster_status", "next_cluster_for_surface", "escalation_alerts",
-    "push_escalation_alerts",
+    "push_escalation_alerts", "reconcile_cluster_statuses",
 ]
