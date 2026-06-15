@@ -64,6 +64,7 @@ STAGES_ORDER = (
     "pm2_health",
     "spot_check",
     "pnl_sanity",
+    "eval_gate",
 )
 
 # How long to give each subprocess. ruff + pytest can be slow on a cold cache.
@@ -325,6 +326,28 @@ def _stage_pnl_sanity(release: dict) -> tuple[bool, str, str | None]:
     return True, excerpt, None
 
 
+def _stage_eval_gate() -> tuple[bool, str, str | None]:
+    """G3.2 deterministic P&L regression guard (flag-gated, default OFF).
+
+    Re-prices the recent house book over recorded candles and HOLDs a release
+    that regresses the modeled economics vs the last verified baseline. OFF →
+    clean no-op (release path byte-identical to today). ABSTAIN/PASS → ok;
+    HOLD → fail (the orchestrator reverts). Fail-safe: an engine error abstains
+    rather than blocking a release on a backtest bug."""
+    from helm.config import EVAL_GATE_WINDOW_DAYS, live_flag
+    if not live_flag("EVAL_GATE_ENABLED"):
+        return True, "eval_gate disabled (flag off)", None
+    try:
+        from helm.eval.gate import evaluate
+        out = evaluate()
+    except Exception as exc:  # noqa: BLE001 — never block a release on a gate bug
+        return True, f"eval_gate abstained on error: {str(exc)[:160]}", None
+    excerpt = (f"[{EVAL_GATE_WINDOW_DAYS}d] {out.verdict}: {out.detail}")
+    if out.verdict == "HOLD":
+        return False, excerpt, f"eval_gate HOLD — {out.detail}"
+    return True, excerpt, None
+
+
 # ─── Public API ───────────────────────────────────────────────────────
 
 def verify_release(release_id: int) -> dict:
@@ -379,6 +402,8 @@ def verify_release(release_id: int) -> dict:
             r = _run_stage(stage_name, _stage_spot_check)
         elif stage_name == "pnl_sanity":
             r = _run_stage(stage_name, lambda rel=rel: _stage_pnl_sanity(rel))
+        elif stage_name == "eval_gate":
+            r = _run_stage(stage_name, _stage_eval_gate)
         else:  # unreachable — STAGES_ORDER is closed
             continue
         stages[stage_name] = r.to_dict()

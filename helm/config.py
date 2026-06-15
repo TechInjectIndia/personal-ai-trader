@@ -186,6 +186,13 @@ MAX_OPEN_POSITIONS_PER_SYMBOL: int = 2
 # never breaks the retro). Default OFF: shipped dark until the backfill has run
 # and the runtime is proven. Toggle live from the dashboard Control Center.
 CLUSTER_ON_EMIT: bool = False
+# When ON, the Tester runs a deterministic eval-gate stage (helm.eval.gate):
+# re-prices the recent house book over recorded candles and HOLDs (reverts) a
+# release that regresses the modeled economics vs the last verified baseline.
+# Default OFF: shipped dark until the engine is trusted on live releases. When
+# OFF the stage is a clean no-op (the release path is byte-identical to today).
+EVAL_GATE_ENABLED: bool = False
+EVAL_GATE_WINDOW_DAYS: int = 30   # look-back the gate re-prices
 # A cluster whose fix was escalated from a freestyle agent to the house surface
 # (G2) and that has recurred at least this many times with no in-surface owner
 # is surfaced to the human via the Action Center — the visible form of insight
@@ -316,6 +323,7 @@ EDITABLE_FLAG_KEYS: tuple[str, ...] = (
     "CONTEXT_SIGNALS_ENABLED",
     "HOUSE_STRATEGY_KEYED_SLOTS",
     "CLUSTER_ON_EMIT",
+    "EVAL_GATE_ENABLED",
 )
 EDITABLE_TUNABLE_KEYS: tuple[str, ...] = (
     "MIN_EDGE_TO_COST",
@@ -327,6 +335,7 @@ _FLAG_DEFAULTS: dict[str, bool] = {
     "CONTEXT_SIGNALS_ENABLED": CONTEXT_SIGNALS_ENABLED,
     "HOUSE_STRATEGY_KEYED_SLOTS": HOUSE_STRATEGY_KEYED_SLOTS,
     "CLUSTER_ON_EMIT": CLUSTER_ON_EMIT,
+    "EVAL_GATE_ENABLED": EVAL_GATE_ENABLED,
 }
 _TUNABLE_DEFAULTS: dict[str, Decimal] = {
     "MIN_EDGE_TO_COST": MIN_EDGE_TO_COST,

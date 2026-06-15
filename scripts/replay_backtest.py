@@ -25,62 +25,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from helm.config import HOUSE_TRADE_FILTER  # noqa: E402
-from helm.data.store import conn  # noqa: E402
+from helm.eval.backtest import (  # noqa: E402
+    _candles_after,
+    closed_trades,
+    replay_trades as _replay,
+)
 from helm.eval.metrics import book_metrics, pass_at_k  # noqa: E402
-from helm.eval.replay import SimOutcome, simulate_trade  # noqa: E402
+from helm.eval.replay import SimOutcome  # noqa: E402
 
 
 def _trades(days: int, symbol: str | None, all_books: bool) -> list[dict]:
-    """Closed trades in the window with a target (the simulator needs one).
-
-    Pulls the ORIGINAL planned stop from the source signal (pt.stop_loss is the
-    already-ratcheted high-water mark — useless for A/B-ing the ratchet). Falls
-    back to the stored stop when the signal link is missing. House book by
-    default; --all-books spans every competitor too."""
-    sql = ("SELECT pt.id, pt.entry_ts, pt.symbol, pt.side, pt.entry_price, "
-           "COALESCE(s.stop_loss, pt.stop_loss) AS orig_stop, pt.stop_loss, "
-           "pt.target, pt.qty, pt.pnl_inr, pt.net_pnl_inr "
-           "FROM paper_trades pt "
-           "LEFT JOIN decisions d ON d.id = pt.decision_id "
-           "LEFT JOIN signals s ON s.id = d.signal_id "
-           "WHERE pt.status = 'CLOSED' AND pt.target IS NOT NULL "
-           "AND pt.entry_ts >= now() - make_interval(days => %s)")
-    args: list = [days]
-    if not all_books:
-        sql += " AND " + HOUSE_TRADE_FILTER.replace("competitor_id", "pt.competitor_id")
-    if symbol:
-        sql += " AND pt.symbol = %s"
-        args.append(symbol)
-    sql += " ORDER BY pt.entry_ts ASC"
-    with conn() as c:
-        return list(c.execute(sql, tuple(args)))
-
-
-def _candles_after(symbol: str, ts) -> list[dict]:
-    """1-min closes from just after entry through end of that session."""
-    with conn() as c:
-        return list(c.execute(
-            "SELECT bar_ts, close FROM candles_1m "
-            "WHERE symbol = %s AND bar_ts > %s AND bar_ts < %s + interval '7 hours' "
-            "ORDER BY bar_ts ASC",
-            (symbol, ts, ts),
-        ))
-
-
-def _replay(trades: list[dict], *, apply_ratchet: bool) -> list[SimOutcome]:
-    out: list[SimOutcome] = []
-    for t in trades:
-        qty = int(t["qty"])
-        if qty <= 0:
-            continue
-        candles = _candles_after(t["symbol"], t["entry_ts"])
-        if not candles:
-            continue
-        out.append(simulate_trade(
-            t["side"], Decimal(t["entry_price"]), Decimal(t["orig_stop"]),
-            Decimal(t["target"]), qty, candles, apply_ratchet=apply_ratchet))
-    return out
+    return closed_trades(days, symbol, all_books)
 
 
 def _validate(trades: list[dict]) -> None:
