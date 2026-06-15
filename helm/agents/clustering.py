@@ -346,9 +346,112 @@ def rank_open_clusters(limit: int = 40, target_surface: str | None = None) -> li
         return list(c.execute(sql, tuple(args)))
 
 
+# ─── G2 runtime: selection, status, escalation surfacing ─────────────────
+
+_VALID_CLUSTER_STATUS = ("open", "accepted", "in_flight", "verified",
+                         "rejected", "superseded")
+
+
+def set_cluster_status(cluster_id: int, status: str, note: str | None = None) -> bool:
+    """Move a cluster through its lifecycle (open→accepted→in_flight→verified,
+    or rejected/superseded). Returns True if a row was updated. The note is
+    audited, not stored (the clusters table has no status_note column)."""
+    if status not in _VALID_CLUSTER_STATUS:
+        raise ValueError(f"invalid cluster status {status!r}")
+    with conn() as c:
+        row = c.execute(
+            "UPDATE proposal_clusters SET status = %s, updated_ts = now() "
+            "WHERE id = %s RETURNING id, target_surface, theme",
+            (status, cluster_id),
+        ).fetchone()
+    if row is None:
+        return False
+    insert_audit("agents", "cluster_status_change",
+                 {"cluster_id": cluster_id, "status": status,
+                  "surface": row["target_surface"], "note": (note or "")[:200]})
+    return True
+
+
+def next_cluster_for_surface(target_surface: str) -> dict | None:
+    """The single highest-ranked OPEN cluster a given surface should work next,
+    with its representative proposal's body attached so the PM/engineer can turn
+    it into a typed task. Escalated clusters are preferred (they encode insight
+    that's been structurally stuck). Returns None if the surface is clear."""
+    with conn() as c:
+        row = c.execute(
+            """
+            SELECT pc.id, pc.theme, pc.layer, pc.target_surface, pc.escalated,
+                   pc.origin_competitor_id, pc.recurrence, pc.confidence,
+                   pc.economic_priority, pc.representative_proposal_id,
+                   p.title AS rep_title, p.rationale AS rep_rationale,
+                   p.proposed_change AS rep_proposed_change, p.category AS rep_category
+            FROM proposal_clusters pc
+            LEFT JOIN improvement_proposals p
+                   ON p.id = pc.representative_proposal_id
+            WHERE pc.status = 'open' AND pc.target_surface = %s
+            ORDER BY pc.escalated DESC,
+                     (pc.recurrence * pc.confidence * pc.economic_priority) DESC,
+                     pc.recurrence DESC
+            LIMIT 1
+            """,
+            (target_surface,),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def escalation_alerts(min_recurrence: int | None = None) -> list[dict]:
+    """Open clusters escalated to the house surface (G2) that have recurred at
+    least `min_recurrence` times — insight surfaced from a freestyle agent that
+    needs a house owner. Defaults to config.ESCALATE_RECURRENCE."""
+    from helm.config import ESCALATE_RECURRENCE
+    threshold = ESCALATE_RECURRENCE if min_recurrence is None else min_recurrence
+    with conn() as c:
+        return list(c.execute(
+            "SELECT id, theme, origin_competitor_id, recurrence, confidence "
+            "FROM proposal_clusters "
+            "WHERE status = 'open' AND escalated = true AND recurrence >= %s "
+            "ORDER BY recurrence DESC, confidence DESC",
+            (threshold,),
+        ))
+
+
+def push_escalation_alerts() -> int:
+    """Surface escalated, recurring, owner-less clusters to the human Action
+    Center (the visible form of structurally-stuck insight — the cap-bug failure
+    mode). One queue item per cluster, keyed so re-runs replace not duplicate.
+    Fail-safe: never raises. Returns the number of alerts pushed."""
+    try:
+        alerts = escalation_alerts()
+    except Exception:  # noqa: BLE001
+        return 0
+    pushed = 0
+    for a in alerts:
+        try:
+            from helm.dashboard.attention import enqueue
+            enqueue(
+                key=f"cluster_escalated_{a['id']}",
+                title=f"Escalated fix needs a house owner (×{a['recurrence']})",
+                detail=(f"{a['theme']} — surfaced from "
+                        f"{a['origin_competitor_id']}, recurred "
+                        f"{a['recurrence']}×. The freestyle agent can't touch "
+                        f"shared house code; route it to the house engineer."),
+                level="warn",
+                where="Self-Improvement → proposal clusters",
+                steps=["python scripts/proposals_digest.py --clusters",
+                       f"Queue a house task for cluster {a['id']}"],
+                actor="clustering",
+            )
+            pushed += 1
+        except Exception:  # noqa: BLE001 — surfacing is best-effort
+            continue
+    return pushed
+
+
 __all__ = [
     "normalise_confidence", "decay_confidence", "cluster_rank_score",
     "category_to_layer", "classify_surface",
     "open_clusters", "create_cluster", "recompute_cluster", "attach_proposal",
     "assign_and_persist", "rank_open_clusters",
+    "set_cluster_status", "next_cluster_for_surface", "escalation_alerts",
+    "push_escalation_alerts",
 ]

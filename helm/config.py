@@ -177,6 +177,21 @@ HOUSE_STRATEGY_KEYED_SLOTS: bool = False
 # at 1/symbol). Code-only constant (applies only once the flag is enabled).
 MAX_OPEN_POSITIONS_PER_SYMBOL: int = 2
 
+# --- Self-Improvement Loop v2 — proposal clustering (FRD G1/G2) ---
+# When ON, every improvement_proposal is assigned to a proposal_cluster at
+# creation time (helm.agents.clustering.assign_and_persist), so the backlog
+# stays a small set of ranked distinct ideas instead of re-growing to thousands
+# of restatements. Each assignment is one cheap LLM call made AFTER the retro
+# commits (never inside the retro transaction) and fail-safe (a clustering error
+# never breaks the retro). Default OFF: shipped dark until the backfill has run
+# and the runtime is proven. Toggle live from the dashboard Control Center.
+CLUSTER_ON_EMIT: bool = False
+# A cluster whose fix was escalated from a freestyle agent to the house surface
+# (G2) and that has recurred at least this many times with no in-surface owner
+# is surfaced to the human via the Action Center — the visible form of insight
+# that would otherwise sit structurally stuck (the cap-bug failure mode).
+ESCALATE_RECURRENCE: int = 5
+
 
 def dynamic_position_cap(realised_pnl_inr: Decimal, base_cap_inr: Decimal) -> Decimal:
     """Per-trade notional cap, scaled by realised profit.
@@ -300,6 +315,7 @@ EDITABLE_FLAG_KEYS: tuple[str, ...] = (
     "CONVICTION_SIZING_ENABLED",
     "CONTEXT_SIGNALS_ENABLED",
     "HOUSE_STRATEGY_KEYED_SLOTS",
+    "CLUSTER_ON_EMIT",
 )
 EDITABLE_TUNABLE_KEYS: tuple[str, ...] = (
     "MIN_EDGE_TO_COST",
@@ -310,6 +326,7 @@ _FLAG_DEFAULTS: dict[str, bool] = {
     "CONVICTION_SIZING_ENABLED": CONVICTION_SIZING_ENABLED,
     "CONTEXT_SIGNALS_ENABLED": CONTEXT_SIGNALS_ENABLED,
     "HOUSE_STRATEGY_KEYED_SLOTS": HOUSE_STRATEGY_KEYED_SLOTS,
+    "CLUSTER_ON_EMIT": CLUSTER_ON_EMIT,
 }
 _TUNABLE_DEFAULTS: dict[str, Decimal] = {
     "MIN_EDGE_TO_COST": MIN_EDGE_TO_COST,

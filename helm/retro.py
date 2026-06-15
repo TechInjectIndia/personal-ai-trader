@@ -39,7 +39,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from helm.config import DECIDER_MODEL_DEFAULT, HOUSE_COMPETITOR_ID, SQUARE_OFF_AT
-from helm.data.store import conn
+from helm.data.store import conn, insert_audit
 from helm.llm import complete_json
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -631,15 +631,18 @@ def _persist(kind: str, *, trade_id: int | None, decision_id: int,
                 competitor_id,
             ),
         ).fetchone()
+        assert row is not None  # INSERT ... RETURNING always yields a row
         retro_id = row["id"]
 
+        new_proposal_ids: list[int] = []
         for p in norm.get("improvement_proposals", []):
-            c.execute(
+            row = c.execute(
                 """
                 INSERT INTO improvement_proposals
                     (retro_id, category, title, rationale, proposed_change,
                      evidence, confidence, competitor_id)
                 VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+                RETURNING id
                 """,
                 (
                     retro_id, p["category"], p["title"], p["rationale"],
@@ -647,8 +650,38 @@ def _persist(kind: str, *, trade_id: int | None, decision_id: int,
                     json.dumps(p["evidence"]) if p["evidence"] is not None else None,
                     p["confidence"], competitor_id,
                 ),
-            )
+            ).fetchone()
+            if row is not None:
+                new_proposal_ids.append(int(row["id"]))
+
+    # B1 (FRD G1) — cluster-on-emit. Assign each fresh proposal to a cluster so
+    # the backlog stays a small set of ranked distinct ideas instead of
+    # re-growing into thousands of restatements. Done AFTER the transaction
+    # commits (an LLM call must never hold the retro txn open) and fully
+    # fail-safe: a clustering error is logged, never propagated — a retro must
+    # persist regardless. Flag-gated OFF by default (shipped dark).
+    _maybe_cluster_proposals(new_proposal_ids)
     return retro_id
+
+
+def _maybe_cluster_proposals(proposal_ids: list[int]) -> None:
+    """Cluster freshly-emitted proposals when CLUSTER_ON_EMIT is live. Never
+    raises — clustering is an optimisation on top of the retro, not a gate."""
+    if not proposal_ids:
+        return
+    try:
+        from helm.config import live_flag
+        if not live_flag("CLUSTER_ON_EMIT"):
+            return
+        from helm.agents.clustering import assign_and_persist
+        for pid in proposal_ids:
+            try:
+                assign_and_persist(pid)
+            except Exception as exc:  # noqa: BLE001 — one bad proposal must not abort the rest
+                insert_audit("retro", "cluster_on_emit_failed",
+                             {"proposal_id": pid, "error": str(exc)[:200]})
+    except Exception as exc:  # noqa: BLE001 — clustering is never allowed to break a retro
+        insert_audit("retro", "cluster_on_emit_failed", {"error": str(exc)[:200]})
 
 
 # ───────────────────────── public entry points ─────────────────────────
