@@ -157,6 +157,31 @@ def _set_status(pid: int, new_status: str, note: str | None) -> int:
     return 0
 
 
+def _show_clusters(limit: int) -> int:
+    """Ranked view of distinct ideas (FRD G1) — the headline the loop should act
+    on, instead of a flat list of restatements. recurrence = how many proposals
+    restate the idea; ↑house marks a freestyle-surfaced bug escalated to the
+    house owner (G2)."""
+    from helm.agents.clustering import rank_open_clusters
+
+    rows = rank_open_clusters(limit=limit)
+    if not rows:
+        print("No clusters yet — run `python scripts/cluster_backfill.py` first.")
+        return 0
+    print(f"# Open proposal clusters — top {len(rows)} by recurrence × confidence\n")
+    print(f"{'rec':>4}  {'conf':>4}  {'surface':<16} {'layer':<10} theme")
+    print(f"{'─'*4}  {'─'*4}  {'─'*16} {'─'*10} {'─'*40}")
+    for r in rows:
+        surface = r["target_surface"][:15]
+        flag = " ↑" if r["escalated"] else ""
+        print(f"{r['recurrence']:>4}  {float(r['confidence']):>4.2f}  "
+              f"{surface:<16} {r['layer']:<10} {r['theme'][:60]}{flag}")
+    esc = sum(1 for r in rows if r["escalated"])
+    print(f"\n{len(rows)} clusters shown · {esc} escalated to house. "
+          f"↑ = freestyle-surfaced bug routed to the house owner (G2).")
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--days", type=int, default=30,
@@ -168,6 +193,10 @@ def main() -> int:
                             "superseded", "all"),
                    default="open",
                    help="Default 'open' — applied / rejected are hidden")
+    p.add_argument("--clusters", action="store_true",
+                   help="Show ranked distinct-idea clusters (G1) and exit")
+    p.add_argument("--limit", type=int, default=40,
+                   help="Max clusters to show with --clusters (default 40)")
     p.add_argument("--show", type=int, metavar="ID",
                    help="Print full body of one proposal and exit")
     p.add_argument("--apply", type=int, metavar="ID",
@@ -181,6 +210,9 @@ def main() -> int:
     p.add_argument("--note", default=None,
                    help="Free-text note attached to the status change")
     args = p.parse_args()
+
+    if args.clusters:
+        return _show_clusters(args.limit)
 
     if args.show is not None:
         return _show_one(args.show)

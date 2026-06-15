@@ -423,3 +423,50 @@ CREATE INDEX IF NOT EXISTS config_versions_recent
     ON competitor_config_versions (competitor_id, created_ts DESC);
 CREATE INDEX IF NOT EXISTS config_versions_unverified
     ON competitor_config_versions (created_ts DESC) WHERE status = 'deployed';
+
+
+-- ─── Self-Improvement Loop v2 — proposal clustering (FRD G1/G2) ───────────
+-- The retro pipeline emits ~hundreds of near-duplicate improvement_proposals
+-- (the same idea restated from many trades — e.g. the cap-clamp fix recurred
+-- ~90×). A flat backlog of 1,700+ open rows is unrankable: the loop can't tell
+-- "proposed once" from "proposed 90×". A cluster is the DISTINCT idea; each
+-- proposal points at its cluster, so recurrence = member count and the digest
+-- ranks clusters, not raw rows.
+--
+-- G2 (escalation): target_surface routes a cluster to the agent that can fix
+-- it. A freestyle agent that diagnoses shared house code sets surface='house'
+-- + escalated=true (with origin_competitor_id), so a house-engineer can own a
+-- fix the freestyle agent is walled off from — the exact failure that hid the
+-- cap bug for weeks.
+CREATE TABLE IF NOT EXISTS proposal_clusters (
+    id                 BIGSERIAL PRIMARY KEY,
+    theme              TEXT NOT NULL,                 -- canonical one-line idea
+    layer              TEXT NOT NULL CHECK (layer IN
+                          ('strategy', 'decider', 'risk', 'sizing',
+                           'execution', 'data', 'meta', 'persona')),
+    -- 'house' or a competitor_id — who owns the fix (G2 routing).
+    target_surface     TEXT NOT NULL DEFAULT 'house',
+    escalated          BOOLEAN NOT NULL DEFAULT false, -- surfaced from a freestyle agent
+    origin_competitor_id TEXT,                          -- who first surfaced it
+    confidence         NUMERIC(3,2) NOT NULL DEFAULT 0, -- max member conf, decayed
+    recurrence         INT NOT NULL DEFAULT 0,          -- # member proposals
+    economic_priority  NUMERIC(5,2) NOT NULL DEFAULT 1, -- digest-set $-impact weight
+    status             TEXT NOT NULL DEFAULT 'open'
+                        CHECK (status IN ('open', 'accepted', 'in_flight',
+                                          'verified', 'rejected', 'superseded')),
+    representative_proposal_id BIGINT REFERENCES improvement_proposals(id) ON DELETE SET NULL,
+    last_member_ts     TIMESTAMPTZ NOT NULL DEFAULT now(), -- newest member; drives decay
+    created_ts         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_ts         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS clusters_open_ranked
+    ON proposal_clusters (status, recurrence DESC, confidence DESC)
+    WHERE status = 'open';
+CREATE INDEX IF NOT EXISTS clusters_by_surface
+    ON proposal_clusters (target_surface, status);
+
+-- Each proposal points at the distinct idea it restates (NULL until clustered).
+ALTER TABLE improvement_proposals
+    ADD COLUMN IF NOT EXISTS cluster_id BIGINT REFERENCES proposal_clusters(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS proposals_by_cluster
+    ON improvement_proposals (cluster_id) WHERE cluster_id IS NOT NULL;
