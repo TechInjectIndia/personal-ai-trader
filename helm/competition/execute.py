@@ -52,18 +52,25 @@ class CloseResult(NamedTuple):
 
 
 def _size_qty(competitor_id: str, entry: Decimal, requested_qty: int | None) -> int:
-    """Shares to buy: explicit request, else auto-size to the affordable budget.
+    """Shares to buy: explicit request CLAMPED to budget, else auto-size to it.
 
     Budget = min(dynamic per-trade cap for this competitor, wallet cash free).
-    The risk gate re-checks both ceilings, so this is just the opening bid.
+    A freestyle agent that asks for more shares than the per-trade cap / wallet
+    can fund used to be hard-rejected by risk.evaluate, discarding the whole
+    order (the dominant cause of cap-blocked SKIPs — gemini-momentum/nemotron
+    got ~0 fills on 100s of intents). Instead, size DOWN to what fits: take the
+    smaller of the agent's request and the affordable share count, so a valid
+    setup still trades at a capped size rather than not at all. The risk gate
+    re-checks both ceilings, so a clamped qty always passes them.
     """
-    if requested_qty is not None:
-        return max(0, int(requested_qty))
     wallet = competitor_wallet_state(competitor_id)
     base_cap = live_risk_limits().max_position_inr
     effective_cap = dynamic_position_cap(wallet.realised_net_pnl, base_cap)
     budget = min(effective_cap, wallet.available)
-    return int(budget // entry) if budget >= entry else 0
+    affordable = int(budget // entry) if budget >= entry else 0
+    if requested_qty is not None:
+        return min(max(0, int(requested_qty)), affordable)
+    return affordable
 
 
 def execute_competitor_open(
