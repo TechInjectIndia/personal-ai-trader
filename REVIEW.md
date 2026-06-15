@@ -35,6 +35,8 @@ durable signals to Postgres already (audit/decisions/etc.) — the digest reads 
 | F6 multi-timeframe (`_5m` variants) | 2026-06-08 | 5-min bars capture bigger moves vs the same fixed cost | `_5m` variants show higher E2C / better net than their 1-min twin | every session + weekly | 🟡 watching (0 trades yet); **A/B unblocked — risk-keying ON 2026-06-08** |
 | F7 Context Engine (microservice) | 2026-06-08 | external news/event context lifts decision quality where the chart can't | score predicts next move (digest F7 block: pearson>0, dir_hit≳55%, n≥40) → then claude-full A/B | every session (shadow live 2026-06-09) | 🟡 SHADOW ingesting (:8601 + 15min cron); URL unset = claude-blind |
 | Daily post-close cadence | 2026-06-08 | daily loop iterates safely overnight | ≥1 pm/eng/tester run per trading day; no overnight regression survives to open | every session | 🟡 watching |
+| Self-Improve v2: clustering + promotion (G1/G2) | 2026-06-15 | dedup the orphan backlog + give escalated insight a path to ship | open clusters ≤~40; escalated shared-code bugs auto-promote→build→verify with no human; no orphan re-growth | every session | 🟡 LIVE (`CLUSTER_ON_EMIT`=on, `promote_clusters` cron 11:03 UTC; backfill running) |
+| Self-Improve v2: eval-gate (G3) | 2026-06-15 | gate releases on replayed P&L, not "it compiles" | HOLDs releases that regress modeled economics; ABSTAINs cleanly otherwise; engine error never blocks | every session | 🟡 LIVE (`EVAL_GATE_ENABLED`=on; baseline net ₹314.90/31trades) |
 
 Legend: 🟡 watching · ⏳ landing · 🟢 graduated (proven) · 🔴 reverted/killed · 🔧 tuned.
 
