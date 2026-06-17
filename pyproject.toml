@@ -5,25 +5,20 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "helm"
 version = "0.1.0"
-description = "Personal investment automation across Zerodha and Interactive Brokers."
+description = "Single-user intraday paper-trading bot for NSE large caps (Zerodha)."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Sumeet" }]
 license = { text = "Proprietary — personal use" }
 
 dependencies = [
-    # Broker SDKs
+    # Broker SDK
     "kiteconnect>=4.2.0",     # Zerodha official Python SDK
-    "ib_insync>=0.9.86",      # IBKR async wrapper
 
     # Data + analytics
     "pandas>=2.2",
     "numpy>=1.26",
-    "duckdb>=0.10",           # OHLCV cache
-    "yfinance>=0.2",          # Free US daily bars
-
-    # Backtesting
-    "backtrader>=1.9.78",     # OSS backtester
+    "yfinance>=0.2",          # LTP source (Kite market-data add-on missing)
 
     # Dashboard + utilities
     "streamlit>=1.30",
