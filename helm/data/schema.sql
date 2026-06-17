@@ -586,3 +586,20 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
 );
 CREATE INDEX IF NOT EXISTS backtest_runs_recent
     ON backtest_runs (market, strategy, symbol, created_ts DESC);
+
+-- Per-market go-live readiness verdicts (FRD M8). A market is READY for real
+-- capital only when BOTH its forward paper book and its backtest show positive
+-- economics. This is a read-only verdict surface — funding stays a manual human
+-- action; nothing here arms live trading.
+CREATE TABLE IF NOT EXISTS go_live_readiness (
+    id            BIGSERIAL PRIMARY KEY,
+    evaluated_ts  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    market        TEXT NOT NULL,
+    paper_pass    BOOLEAN NOT NULL,
+    backtest_pass BOOLEAN NOT NULL,
+    ready         BOOLEAN NOT NULL,
+    metrics       JSONB NOT NULL,
+    reasons       JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS go_live_readiness_recent
+    ON go_live_readiness (market, evaluated_ts DESC);
