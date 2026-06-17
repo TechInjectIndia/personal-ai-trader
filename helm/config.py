@@ -39,6 +39,18 @@ WATCHLIST: list[str] = [
 EXCHANGE = "NSE"
 
 
+# --- Multi-market enablement (FRD M1) ---
+# Which markets the cron loop runs. IN (NSE) is the incumbent and the only one
+# enabled by default; US and CRYPTO are registered (helm.markets.registry) but
+# stay dark until their phases are validated and the human flips the flag here.
+# Editing this + PM2 reload is the single switch that turns a venue on/off.
+MARKET_ENABLED: dict[str, bool] = {
+    "IN": True,
+    "US": False,
+    "CRYPTO": False,
+}
+
+
 # --- Competition tradable universe ---
 # The candidate symbol set that freestyle competitors pick their weekly mandate
 # from (≤ MAX_MANDATE_SYMBOLS each — see helm.competition.mandate). A curated

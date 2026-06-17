@@ -1,63 +1,57 @@
 """
-Tick poller — runs every minute via cron during NSE market hours (09:15-15:30 IST).
+Tick poller — runs every minute via cron. No-ops outside every enabled market's
+session (and on weekends), so cron firing off-hours is silent.
 
-Pulls last-traded-price for each symbol in the watchlist via yfinance and writes
-a row to `ticks`. Then folds recent ticks into 1-minute candles.
+For each enabled market (helm.markets.enabled_markets) that is currently open,
+pulls last-traded-price for each watchlist symbol via that market's data adapter
+and writes a `ticks` row, then folds recent ticks into 1-minute candles.
 
-Why yfinance: the user's Kite Connect app does not have the market-data add-on,
-so kite.ltp/quote/ohlc return PermissionException. yfinance is free, has NSE
-coverage (with .NS suffix), and is delayed by minutes — fine for paper trading.
-Swap this script for a kite.ticker WebSocket loop when the add-on is enabled.
+The incumbent IN market uses the yfinance/.NS adapter (the user's Kite Connect
+app lacks the market-data add-on, so kite.ltp/quote/ohlc 403). US/crypto adapters
+plug in behind the same DataAdapter protocol (M3) and are disabled by default.
 """
 
 from __future__ import annotations
 
 import sys
-from datetime import datetime
-from decimal import Decimal
-from zoneinfo import ZoneInfo
 
-import yfinance as yf
-
-from helm.config import MARKET_OPEN, MARKET_CLOSE, WATCHLIST
 from helm.data.store import insert_audit, insert_tick, roll_minute_candles
-
-IST = ZoneInfo("Asia/Kolkata")
-
-
-def _is_market_open() -> bool:
-    now = datetime.now(IST)
-    if now.weekday() >= 5:           # Sat/Sun
-        return False
-    return MARKET_OPEN <= now.time() <= MARKET_CLOSE
+from helm.markets import enabled_markets
 
 
 def main() -> int:
-    if not _is_market_open():
-        # Cron will hit us off-hours too — no-op, no log spam.
-        return 0
-
-    now = datetime.now(IST)
     inserted = 0
     failed: list[str] = []
-    for symbol in WATCHLIST:
-        try:
-            info = yf.Ticker(f"{symbol}.NS").fast_info
-            ltp = Decimal(str(info.last_price))
-            insert_tick(now, symbol, ltp, None, {"source": "yfinance"})
-            inserted += 1
-        except Exception as exc:
-            failed.append(f"{symbol}: {exc}")
+    candle_upserts = 0
+    ran_any = False
 
-    candle_rows = roll_minute_candles()
+    for market in enabled_markets():
+        if not market.calendar.is_market_open():
+            # Each venue gates on its OWN calendar; cron fires 24/7 but only
+            # open venues do work. No-op + no log spam outside sessions.
+            continue
+        ran_any = True
+        now = market.calendar.now()
+        source = getattr(market.data, "source", "market")
+        for symbol in market.watchlist:
+            ltp = market.data.last_price(symbol)
+            if ltp is None:
+                failed.append(f"{market.key}:{symbol}")
+                continue
+            insert_tick(now, symbol, ltp, None, {"source": source, "market": market.key})
+            inserted += 1
+        candle_upserts += roll_minute_candles()
+
+    if not ran_any:
+        return 0
+
     insert_audit(
         actor="poll_market",
         event="tick_poll",
         detail={
-            "ts": now.isoformat(),
             "inserted": inserted,
             "failed": failed,
-            "candle_upserts": candle_rows,
+            "candle_upserts": candle_upserts,
         },
     )
 

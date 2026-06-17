@@ -14,8 +14,6 @@ from datetime import datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-import yfinance as yf
-
 from helm.charges import round_trip_breakdown
 from helm.config import (
     EXIT_BREAKEVEN_CUSHION_R,
@@ -23,11 +21,10 @@ from helm.config import (
     EXIT_TIME_DECAY_MAX_LOCK,
     EXIT_TIME_DECAY_START_MIN,
     HOUSE_COMPETITOR_ID,
-    MARKET_CLOSE,
-    MARKET_OPEN,
     SQUARE_OFF_AT,
 )
 from helm.data.store import conn, insert_audit
+from helm.markets import MARKET_IN
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -37,10 +34,8 @@ def _now_ist() -> datetime:
 
 
 def _ltp(symbol: str) -> Decimal | None:
-    try:
-        return Decimal(str(yf.Ticker(f"{symbol}.NS").fast_info.last_price))
-    except Exception:
-        return None
+    # IN-routed for now; M6/M7 route each open trade to its own market adapter.
+    return MARKET_IN.data.last_price(symbol)
 
 
 def _is_house(trade: dict) -> bool:
@@ -180,9 +175,7 @@ def _tighten_stop(
 
 def main() -> int:
     now = _now_ist()
-    if now.weekday() >= 5:
-        return 0
-    if not (MARKET_OPEN <= now.time() <= MARKET_CLOSE):
+    if not MARKET_IN.calendar.is_market_open(now):
         return 0
 
     eod = now.time() >= SQUARE_OFF_AT
