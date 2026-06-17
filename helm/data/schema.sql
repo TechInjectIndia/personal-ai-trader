@@ -563,3 +563,26 @@ CREATE TABLE IF NOT EXISTS wallets (
 
 CREATE INDEX IF NOT EXISTS paper_trades_market_status ON paper_trades (market, status);
 CREATE INDEX IF NOT EXISTS signals_market_ts ON signals (market, ts DESC);
+
+-- Forward backtest results (FRD M5). Kept SEPARATE from paper_trades so a
+-- backtest never pollutes the live book or the eval-gate window. metrics is the
+-- BookMetrics.as_dict() blob; the M8 funding gate reads the latest per
+-- (strategy, market, symbol).
+CREATE TABLE IF NOT EXISTS backtest_runs (
+    id           BIGSERIAL PRIMARY KEY,
+    created_ts   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    strategy     TEXT NOT NULL,
+    market       TEXT NOT NULL,
+    symbol       TEXT NOT NULL,
+    bar_minutes  INT NOT NULL,
+    start_ts     TIMESTAMPTZ NOT NULL,
+    end_ts       TIMESTAMPTZ NOT NULL,
+    decider      TEXT NOT NULL,
+    n_signals    INT NOT NULL,
+    n_trades     INT NOT NULL,
+    params       JSONB,
+    metrics      JSONB NOT NULL,
+    code_sha     TEXT
+);
+CREATE INDEX IF NOT EXISTS backtest_runs_recent
+    ON backtest_runs (market, strategy, symbol, created_ts DESC);

@@ -112,7 +112,7 @@ def simulate_trade(
     candles: list[dict],
     *,
     apply_ratchet: bool = True,
-    square_off_at: time = SQUARE_OFF_AT,
+    square_off_at: time | None = SQUARE_OFF_AT,
     cost_model=None,
 ) -> SimOutcome:
     """Replay one trade over the candles that followed its entry.
@@ -143,11 +143,13 @@ def simulate_trade(
         bar_dt = bar["bar_ts"].astimezone(IST)
         bars_held = i
 
-        if bar_dt.time() >= square_off_at:
+        # square_off_at None ⇒ 24/7 venue (crypto): no EOD flatten, and the
+        # #681 time-decay ratchet (which is keyed to the session close) is off.
+        if square_off_at is not None and bar_dt.time() >= square_off_at:
             exit_price, exit_reason, exit_ts = ltp, "EOD", bar_dt
             break
 
-        if apply_ratchet and target is not None:
+        if apply_ratchet and target is not None and square_off_at is not None:
             stop = ratchet_stop(side, entry, stop, target, ltp,
                                 _t_rem_min(bar_dt, square_off_at))
 
