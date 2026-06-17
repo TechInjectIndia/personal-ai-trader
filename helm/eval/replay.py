@@ -113,6 +113,7 @@ def simulate_trade(
     *,
     apply_ratchet: bool = True,
     square_off_at: time = SQUARE_OFF_AT,
+    cost_model=None,
 ) -> SimOutcome:
     """Replay one trade over the candles that followed its entry.
 
@@ -170,7 +171,14 @@ def simulate_trade(
         exit_price = last_close  # mark-to-last for an unclosed window
 
     gross = ((exit_price - entry) if side == "BUY" else (entry - exit_price)) * Decimal(qty)
-    charges = round_trip_charges(side, qty, entry, exit_price) if qty > 0 else Decimal("0")
+    # Default (cost_model=None) is the NSE charge model — byte-identical to the
+    # eval-gate's prior behaviour; M5 passes a market's cost model for US/crypto.
+    if qty > 0:
+        charges = (cost_model.round_trip_charges(side, qty, entry, exit_price)
+                   if cost_model is not None
+                   else round_trip_charges(side, qty, entry, exit_price))
+    else:
+        charges = Decimal("0")
     net = gross - charges
     return SimOutcome(
         side=side, entry=entry, exit_price=exit_price, qty=qty,

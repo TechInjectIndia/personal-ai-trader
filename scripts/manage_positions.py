@@ -14,7 +14,6 @@ from datetime import datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from helm.charges import round_trip_breakdown
 from helm.config import (
     EXIT_BREAKEVEN_CUSHION_R,
     EXIT_BREAKEVEN_TRIGGER_R,
@@ -24,7 +23,7 @@ from helm.config import (
     SQUARE_OFF_AT,
 )
 from helm.data.store import conn, insert_audit
-from helm.markets import MARKET_IN
+from helm.markets import MARKET_IN, get_market
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -50,7 +49,9 @@ def _close_trade(c, trade: dict, exit_price: Decimal, reason: str) -> None:
     entry = Decimal(trade["entry_price"])
     side = trade["side"]
     pnl = (exit_price - entry) * qty if side == "BUY" else (entry - exit_price) * qty
-    breakdown = round_trip_breakdown(side, qty, entry, exit_price)
+    # Cost model is the trade's own market (IN → ZerodhaCosts, byte-identical).
+    mkt = get_market(trade.get("market") or "IN")
+    breakdown = mkt.costs.round_trip_breakdown(side, qty, entry, exit_price)
     charges = breakdown.total
     net_pnl = pnl - charges
     c.execute(

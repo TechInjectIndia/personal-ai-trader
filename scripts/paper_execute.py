@@ -25,7 +25,6 @@ from decimal import Decimal
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
-from helm.charges import round_trip_breakdown
 from helm.config import (
     dynamic_position_cap,
     live_flag,
@@ -47,14 +46,15 @@ class ExecutionResult(NamedTuple):
     message: str
 
 
-def _edge_to_cost(side: str, qty: int, entry: Decimal, target: Decimal) -> Decimal:
+def _edge_to_cost(cost_model, side: str, qty, entry: Decimal, target: Decimal) -> Decimal:
     """Gross reward to target as a multiple of the expected round-trip cost.
 
-    Uses the SAME charge model the realized P&L uses (round_trip_breakdown), so
-    the gate and the books agree. Returns Decimal('0') when cost is zero so the
-    caller treats a degenerate position as un-tradeable rather than dividing by 0.
+    Uses the trade's MARKET cost model (the same one the realized P&L uses), so
+    the gate and the books agree per venue. Returns Decimal('0') when cost is
+    zero so the caller treats a degenerate position as un-tradeable rather than
+    dividing by 0.
     """
-    exp_cost = round_trip_breakdown(side, qty, entry, target).total
+    exp_cost = cost_model.round_trip_breakdown(side, qty, entry, target).total
     gross_reward = abs(target - entry) * qty
     return (gross_reward / exp_cost) if exp_cost > 0 else Decimal("0")
 
@@ -164,7 +164,7 @@ def execute_signal(
                 f"{sig['symbol']} costs ₹{entry}"
             )
         elif target is not None and (
-            e2c := _edge_to_cost(sig["side"], sized_qty, entry, Decimal(target))
+            e2c := _edge_to_cost(mkt.costs, sig["side"], sized_qty, entry, Decimal(target))
         ) < (min_e2c := live_tunable("MIN_EDGE_TO_COST")):
             # F2: target move too small relative to round-trip cost — a
             # guaranteed net loser even if right. Skip via the shared SKIP tail.
