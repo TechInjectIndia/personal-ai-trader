@@ -73,12 +73,21 @@ def _df_to_candles(df) -> list[dict]:
         return []
 
     def col(name: str):
+        sel = None
         if name in df.columns:
-            return df[name]
-        for c in df.columns:               # single-ticker MultiIndex: (field, ticker)
-            if isinstance(c, tuple) and c[0] == name:
-                return df[c]
-        return None
+            sel = df[name]                 # NOTE: MultiIndex level-0 match → DataFrame
+        else:
+            for c in df.columns:           # single-ticker MultiIndex: (field, ticker)
+                if isinstance(c, tuple) and c[0] == name:
+                    sel = df[c]
+                    break
+        if sel is None:
+            return None
+        # yfinance returns MultiIndex columns even for one ticker; `df['Close']`
+        # then yields a 1-column DataFrame — squeeze it to a Series.
+        if hasattr(sel, "columns"):
+            sel = sel.iloc[:, 0]
+        return sel
 
     o, h, low, c, v = (col("Open"), col("High"), col("Low"), col("Close"), col("Volume"))
     if any(x is None for x in (o, h, low, c)):
@@ -115,9 +124,15 @@ class YFinanceNS:
         import yfinance as yf
 
         try:
+            interval = _yf_interval(bar_minutes)
+            # yfinance returns EMPTY for intraday with tz-aware start/end; the
+            # period= form works. Clamp the period to yfinance's intraday history
+            # caps (1m≈7d, other intraday≈60d, daily≈years).
+            days = max(1, (end - start).days)
+            cap = 7 if interval == "1m" else (60 if interval.endswith("m") else 730)
             df = yf.download(
-                f"{symbol}{self.suffix}", start=start, end=end,
-                interval=_yf_interval(bar_minutes), progress=False, auto_adjust=False,
+                f"{symbol}{self.suffix}", period=f"{min(days, cap)}d",
+                interval=interval, progress=False, auto_adjust=False,
             )
             return _df_to_candles(df)
         except Exception:
