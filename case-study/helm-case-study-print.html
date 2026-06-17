@@ -52,8 +52,15 @@
   figure{margin:5mm 0;page-break-inside:avoid;}
   .shot{width:100%;border:1px solid #1e293b;border-radius:10px;display:block;
     background:var(--navy);box-shadow:0 1px 0 rgba(2,6,23,.04);}
-  .diagram{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 8px;text-align:center;}
-  .mermaid{font-size:9pt;}
+  .diagram{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px 10px;text-align:center;overflow:visible;}
+  .diagram svg{max-width:100%;height:auto;display:block;margin:0 auto;}
+  .mermaid{font-size:10pt;}
+  /* multi-row (snake) diagrams: each row is its own LR/RL graph, stacked */
+  .diagram-rows{display:flex;flex-direction:column;gap:0;padding:12px 6px;}
+  .mrow{width:100%;}
+  .rowconnect{font-size:8.3pt;font-weight:700;color:var(--violet);letter-spacing:.02em;margin:-4px 0;}
+  .rowconnect.r{text-align:right;padding-right:11%;}
+  .rowconnect.l{text-align:left;padding-left:9%;}
   figcaption{font-size:8.4pt;color:var(--muted);margin-top:5px;text-align:center;font-style:italic;}
 
   /* layer chips */
@@ -189,29 +196,34 @@ flowchart TB
     scores a non-expert can read.</p>
 
   <figure>
-    <div class="diagram">
-      <pre class="mermaid">
+    <div class="diagram diagram-rows">
+      <div class="mrow"><pre class="mermaid">
 flowchart LR
   C(["cron · every minute"]) --> P["poll market<br/>yfinance LTP"]
   P -->|tick| DB[("Postgres<br/>candles_1m")]
   DB -->|1-min OHLC| S["strategy scan<br/>ORB · VWAP · gap-fade"]
-  S -->|signal| D{{"Claude · DECIDE<br/>TAKE / SKIP + reason"}}
-  D -->|TAKE| G{"RISK GATE<br/>hard limits"}
-  G -->|pass| T["paper trade<br/>cap ₹15k → ₹25k"]
+  S -->|signal| D{{"Claude · DECIDE<br/>TAKE / SKIP"}}
+  classDef llm fill:#ede9fe,stroke:#7c3aed,color:#4c1d95;
+  classDef db fill:#e0f2fe,stroke:#0ea5e9,color:#075985;
+  class D llm
+  class DB db
+      </pre></div>
+      <div class="rowconnect r">on TAKE ↓</div>
+      <div class="mrow"><pre class="mermaid">
+flowchart RL
+  G{"RISK GATE<br/>hard limits"} -->|pass| T["paper trade<br/>cap ₹15k → ₹25k"]
   T --> M["manage<br/>stop / target / 15:15"]
-  M -->|closed trade| R{{"Claude · RETRO<br/>plain-English grade"}}
+  M -->|closed| R{{"Claude · RETRO<br/>plain-English grade"}}
   R --> PR["improvement_proposals"]
   classDef llm fill:#ede9fe,stroke:#7c3aed,color:#4c1d95;
   classDef gate fill:#fef3c7,stroke:#d97706,color:#7c2d12;
-  classDef db fill:#e0f2fe,stroke:#0ea5e9,color:#075985;
   classDef act fill:#dcfce7,stroke:#16a34a,color:#14532d;
-  class D,R llm
+  class R llm
   class G gate
-  class DB db
   class T act
-      </pre>
+      </pre></div>
     </div>
-    <figcaption>Layer 1 — signal → Claude decides → hard risk gate → trade → Claude grades. The model proposes; pure code disposes.</figcaption>
+    <figcaption>Layer 1 — signal → Claude decides → hard risk gate → trade → Claude grades (read top row left-to-right, then bottom row right-to-left). The model proposes; pure code disposes.</figcaption>
   </figure>
 
   <figure>
@@ -241,24 +253,29 @@ flowchart LR
     reach: agents that operate safely against a real, running system.</p>
 
   <figure>
-    <div class="diagram">
-      <pre class="mermaid">
+    <div class="diagram diagram-rows">
+      <div class="mrow"><pre class="mermaid">
 flowchart LR
   RUN["Running trading loop<br/>(Layer 1, live)"] -->|graded outcomes| RT["retros + proposals<br/>plain-English grade"]
   RT -->|ranked recurrence × confidence| PM{{"PM agent · LLM<br/>triage → typed task"}}
-  PM -->|task + spec| EN{{"Engineer agent · LLM<br/>typed mutators · commit"}}
-  EN -->|commit on main| TS["Tester agent<br/>verify on live · revert on fail"]
-  TS -->|verified| HU["Human gate<br/>review and push"]
-  HU -->|pushed → live| RUN
+  classDef llm fill:#ede9fe,stroke:#7c3aed,color:#4c1d95;
+  classDef act fill:#dcfce7,stroke:#16a34a,color:#14532d;
+  class PM llm
+  class RUN act
+      </pre></div>
+      <div class="rowconnect r">task + spec ↓</div>
+      <div class="mrow"><pre class="mermaid">
+flowchart RL
+  EN{{"Engineer agent · LLM<br/>typed mutators · commit"}} -->|commit on main| TS["Tester agent<br/>verify on live · revert on fail"]
+  TS -->|verified| HU["Human gate<br/>review &amp; push"]
   classDef llm fill:#ede9fe,stroke:#7c3aed,color:#4c1d95;
   classDef test fill:#ecfeff,stroke:#0891b2,color:#155e75;
   classDef human fill:#fff7ed,stroke:#ea580c,color:#7c2d12;
-  classDef act fill:#dcfce7,stroke:#16a34a,color:#14532d;
-  class PM,EN llm
+  class EN llm
   class TS test
   class HU human
-  class RUN act
-      </pre>
+      </pre></div>
+      <div class="rowconnect l">↑ pushed → live · the loop repeats (human is the only push gate)</div>
     </div>
     <figcaption>Layer 2 — the always-green PM → Engineer → Tester loop, run independently for every agent, with a human as the only push gate.</figcaption>
   </figure>
@@ -283,37 +300,32 @@ flowchart LR
     auto-resume — not six chatbots in a trench coat.</p>
 
   <figure>
-    <div class="diagram">
-      <pre class="mermaid">
+    <div class="diagram diagram-rows">
+      <div class="mrow"><pre class="mermaid">
 flowchart LR
-  subgraph AG["6 CLI backends · one persona each"]
-    direction TB
-    A1["Claude — house incumbent"]
-    A2["Gemini — momentum"]
-    A3["Qwen3 — mean-reversion"]
-    A4["Nemotron — trend"]
-    A5["opencode — range/ETF"]
-    A6["Kiro — ORB · queued"]
-  end
-  AG -->|every 5 min| SNAP["market snapshot<br/>universe + book + wallet"]
+  AG["6 CLI backends · one persona each<br/>Claude · Gemini · Qwen3 · Nemotron · opencode · Kiro"] -->|every 5 min| SNAP["market snapshot<br/>universe + book + wallet"]
   SNAP --> Q{"quota gate<br/>per backend"}
-  Q --> BC{{"backend call<br/>OPEN / CLOSE / HOLD<br/>logged → agent_invocations"}}
-  BC --> RG{"risk gate<br/>per-competitor"}
-  RG --> EX["paper_execute<br/>chokepoint"]
-  EX -->|isolated debit / credit| W[("6 isolated wallets<br/>₹50k each")]
-  W --> LB["leaderboard +<br/>how it thinks"]
-  BC -.->|reasoning| LB
+  Q --> BC{{"backend call<br/>OPEN / CLOSE / HOLD"}}
   classDef llm fill:#ede9fe,stroke:#7c3aed,color:#4c1d95;
+  classDef gate fill:#fef3c7,stroke:#d97706,color:#7c2d12;
+  class BC llm
+  class Q gate
+      </pre></div>
+      <div class="rowconnect r">logged → agent_invocations ↓</div>
+      <div class="mrow"><pre class="mermaid">
+flowchart RL
+  RG{"risk gate<br/>per-competitor"} -->|pass| EX["paper_execute<br/>chokepoint"]
+  EX -->|debit / credit| W[("6 isolated wallets<br/>₹50k each")]
+  W --> LB["leaderboard +<br/>how it thinks"]
   classDef gate fill:#fef3c7,stroke:#d97706,color:#7c2d12;
   classDef db fill:#e0f2fe,stroke:#0ea5e9,color:#075985;
   classDef act fill:#dcfce7,stroke:#16a34a,color:#14532d;
-  class BC llm
-  class Q,RG gate
+  class RG gate
   class W db
   class EX act
-      </pre>
+      </pre></div>
     </div>
-    <figcaption>Layer 3 — six AI backends, one shared risk-gated path, isolated wallets, a common leaderboard.</figcaption>
+    <figcaption>Layer 3 — six AI backends, one shared risk-gated path, isolated wallets, a common leaderboard (read top row left-to-right, then bottom row right-to-left).</figcaption>
   </figure>
 
   <figure>
@@ -358,8 +370,10 @@ flowchart LR
       closed action yields exactly one plain-English grade.</li>
     <li><b>The system improves itself</b> within a tightly bounded, human-gated, always-green workflow —
       changes ship and self-verify, or revert automatically.</li>
-    <li><b>Six AI models compete head-to-head</b> (five live, one queued) on identical infrastructure with
-      fully isolated capital, per-model quota safety, and a self-improvement loop each.</li>
+    <li><b>Multiple AI models compete head-to-head</b> on identical infrastructure with
+      fully isolated capital, per-model quota safety, and a self-improvement loop each — the platform
+      retires underperformers on live P&amp;L; Claude and Gemini are the current roster
+      (Qwen3, Nemotron, opencode, Kiro benchmarked and retired).</li>
     <li><b>Deployed on a single server</b> behind PM2, nginx, and Let's Encrypt — a deliberately small,
       debuggable footprint with no queue, no Redis, no async sprawl.</li>
   </ul>
@@ -401,10 +415,18 @@ flowchart LR
   import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
   mermaid.initialize({
     startOnLoad:false, securityLevel:'loose', theme:'base',
-    flowchart:{useMaxWidth:true, htmlLabels:true, curve:'basis'},
+    flowchart:{
+      useMaxWidth:true,
+      htmlLabels:true,
+      curve:'basis',
+      nodeSpacing:22,
+      rankSpacing:30,
+      padding:10,
+      wrappingWidth:220
+    },
     themeVariables:{
       fontFamily:'-apple-system,Segoe UI,Helvetica,Arial,sans-serif',
-      fontSize:'13px', lineColor:'#94a3b8',
+      fontSize:'14px', lineColor:'#94a3b8',
       primaryColor:'#f1f5f9', primaryBorderColor:'#cbd5e1', primaryTextColor:'#0f172a'
     }
   });

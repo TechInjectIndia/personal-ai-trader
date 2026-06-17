@@ -38,7 +38,7 @@ Diagrams — ready-made PNGs (also live as Mermaid on the website):
 3. case-study/assets/02-self-improvement-loop.png  (READY)
    What: Layer 2 — PM → Engineer → Tester → human push, the always-green agent loop.
 4. case-study/assets/03-competition-league.png  (READY)
-   What: Layer 3 — five AI backends, one shared risk gate, isolated wallets, leaderboard.
+   What: Layer 3 — multiple AI backends benchmarked head-to-head, one shared risk gate, isolated wallets, leaderboard (underperformers retired on P&L).
 
 Screenshots — captured from the live dashboard, no PII (all READY in case-study/assets/):
 5. screenshot-hero.png  (READY — strongest cover)

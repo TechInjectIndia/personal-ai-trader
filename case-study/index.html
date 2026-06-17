@@ -47,7 +47,7 @@
     {"@type": "Question", "name": "Is this just a chatbot or a no-code automation?",
      "acceptedAnswer": {"@type": "Answer", "text": "No. It is a real backend — about 16,700 lines of Python on a 20-table PostgreSQL database, cron-driven on a Linux server, with idempotency, audit logging, race-proofing, and a hard validation gate the AI cannot bypass."}},
     {"@type": "Question", "name": "Which AI models does it use?",
-     "acceptedAnswer": {"@type": "Answer", "text": "Claude (Anthropic) is the primary decision and grading model. The competition league additionally runs Gemini, Qwen3, Nemotron, opencode, and Kiro head-to-head on identical infrastructure."}},
+     "acceptedAnswer": {"@type": "Answer", "text": "Claude (Anthropic) is the primary decision and grading model. The competition league benchmarked Gemini, Qwen3, Nemotron, opencode, and Kiro head-to-head on identical infrastructure and retires underperformers on live P&L — Claude and Gemini are the current active roster."}},
     {"@type": "Question", "name": "How does it keep AI agents safe to run autonomously?",
      "acceptedAnswer": {"@type": "Answer", "text": "Three ways: the AI proposes but a pure-code validator always has the final say; the engineering agent can only use a closed set of typed, schema-validated code edits; and a tester agent reverts any change that regresses, with a human as the only gate that pushes to production."}},
     {"@type": "Question", "name": "Can this pattern be applied outside trading?",
@@ -301,7 +301,7 @@
     <li><strong>Runs unattended</strong> through the session every weekday and silently no-ops outside the window — no babysitting, no log spam.</li>
     <li><strong>Every decision is auditable</strong> — one explained decision per signal, one plain-English grade per closed action.</li>
     <li><strong>The system improves itself</strong> inside a bounded, human-gated, always-green workflow — changes ship and self-verify, or revert automatically.</li>
-    <li><strong>Six AI models compete head-to-head</strong> (five live, one queued) on identical infrastructure with fully isolated capital, per-model quota safety, and a self-improvement loop each.</li>
+    <li><strong>Multiple AI models compete head-to-head</strong> on identical infrastructure — fully isolated capital, per-model quota safety, and a self-improvement loop each. The platform retires underperformers on live P&amp;L; Claude and Gemini are the current roster (Qwen3, Nemotron, opencode, Kiro benchmarked and retired).</li>
     <li><strong>Deployed on a single server</strong> behind PM2, nginx, and Let's Encrypt — a small, debuggable footprint with no queue, no Redis, no async sprawl.</li>
   </ul>
 
@@ -319,7 +319,7 @@
   <h2>Frequently asked questions</h2>
   <details open><summary>What is Helm?</summary><p>A production AI system that uses large language models as decision-makers inside a real, audited backend. It gates every automated action with AI judgment, grades every outcome in plain English, and uses a team of AI agents to ship and verify its own improvements — demonstrated on an intraday paper-trading workload.</p></details>
   <details><summary>Is this just a chatbot or a no-code automation?</summary><p>No. It's a real backend — about 16,700 lines of Python on a 20-table PostgreSQL database, cron-driven on a Linux server, with idempotency, audit logging, race-proofing, and a hard validation gate the AI cannot bypass.</p></details>
-  <details><summary>Which AI models does it use?</summary><p>Claude (Anthropic) is the primary decision and grading model. The competition league additionally runs Gemini, Qwen3, Nemotron, opencode, and Kiro head-to-head on identical infrastructure.</p></details>
+  <details><summary>Which AI models does it use?</summary><p>Claude (Anthropic) is the primary decision and grading model. The competition league benchmarked Gemini, Qwen3, Nemotron, opencode, and Kiro head-to-head on identical infrastructure and retires underperformers on live P&L — Claude and Gemini are the current active roster.</p></details>
   <details><summary>How does it keep AI agents safe to run autonomously?</summary><p>Three ways: the AI proposes but a pure-code validator always has the final say; the engineering agent can only use a closed set of typed, schema-validated code edits; and a tester agent reverts any change that regresses, with a human as the only gate that pushes to production.</p></details>
   <details><summary>Can this pattern be applied outside trading?</summary><p>Yes. The architecture is domain-agnostic: any high-volume decision stream that needs judgment before the action and explanation after it — lead qualification, support triage, document review, content moderation.</p></details>
   <details><summary>How is LLM cost controlled?</summary><p>All model traffic is behind a single swappable transport. The POC runs at near-zero marginal cost; switching to a metered production API is a one-environment-variable change with no code edits.</p></details>

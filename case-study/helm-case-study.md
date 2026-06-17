@@ -185,7 +185,7 @@ These are the same patterns that separate a no-code prototype that falls over fr
 - **Runs unattended** through the trading session every weekday and silently no-ops outside the window — no manual babysitting, no log spam.
 - **Every decision is auditable.** Every signal yields exactly one explained decision; every closed action yields exactly one plain-English grade.
 - **The system improves itself** within a tightly bounded, human-gated, always-green workflow — code changes ship and self-verify, or revert automatically.
-- **Six AI models compete head-to-head** (five live, one queued) on identical infrastructure with fully isolated capital and per-model quota safety, each running its own self-improvement loop.
+- **Multiple AI models compete head-to-head** on identical infrastructure — fully isolated capital, per-model quota safety, and a self-improvement loop each. The platform retires underperformers on live P&L; Claude and Gemini are the current active roster (Qwen3, Nemotron, opencode, Kiro benchmarked and retired).
 - **Deployed on a single server** behind PM2, nginx, and Let's Encrypt — a deliberately small, debuggable footprint with no queue, no Redis, no async sprawl.
 
 ---
@@ -216,7 +216,7 @@ Helm is a production AI system that uses large language models as decision-maker
 No. It's a real backend — ~16,700 lines of Python on a 20-table PostgreSQL database, cron-driven on a Linux server, with idempotency, audit logging, race-proofing, and a hard validation gate the AI cannot bypass.
 
 **Which AI models does it use?**
-Claude (Anthropic) is the primary decision and grading model. The competition league additionally runs Gemini, Qwen3, Nemotron, opencode, and Kiro head-to-head on identical infrastructure.
+Claude (Anthropic) is the primary decision and grading model. The competition league benchmarked Gemini, Qwen3, Nemotron, opencode, and Kiro head-to-head on identical infrastructure and retires underperformers on live P&L — Claude and Gemini are the current active roster.
 
 **How does it keep AI agents safe to run autonomously?**
 Three ways: the AI proposes but a pure-code validator always has the final say; the engineering agent can only use a closed set of typed, schema-validated code edits; and a tester agent reverts any change that regresses, with a human as the only gate that pushes to production.
