@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
@@ -24,8 +25,17 @@ def conn() -> Iterator[psycopg.Connection[dict[str, Any]]]:
     The `dict[str, Any]` row-type parameter tells the type checker that cursor
     rows are dicts (we pass `row_factory=dict_row`), so `row["col"]` access
     typechecks across the codebase instead of looking like tuple indexing.
+
+    DSN defaults to `helm.config.PG_DSN` (local `dbname=helm`). `HELM_DSN` /
+    `HELM_SEARCH_PATH` env vars override it — used only to point at an isolated
+    test schema during development; unset in production, so behaviour is
+    unchanged.
     """
-    c = psycopg.connect(PG_DSN, autocommit=True, row_factory=dict_row)
+    dsn = os.environ.get("HELM_DSN", PG_DSN)
+    c = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
+    search_path = os.environ.get("HELM_SEARCH_PATH")
+    if search_path:
+        c.execute(f"SET search_path TO {search_path}")
     try:
         yield c
     finally:
@@ -39,11 +49,13 @@ def init_schema() -> None:
         c.execute(sql)
 
 
-def insert_tick(ts: datetime, symbol: str, ltp: Decimal, volume: int | None, raw: dict | None) -> None:
+def insert_tick(ts: datetime, symbol: str, ltp: Decimal, volume: int | None,
+                raw: dict | None, market: str = "IN") -> None:
     with conn() as c:
         c.execute(
-            "INSERT INTO ticks (ts, symbol, ltp, volume, raw) VALUES (%s, %s, %s, %s, %s::jsonb)",
-            (ts, symbol, ltp, volume, json.dumps(raw) if raw else None),
+            "INSERT INTO ticks (ts, symbol, market, ltp, volume, raw) "
+            "VALUES (%s, %s, %s, %s, %s, %s::jsonb)",
+            (ts, symbol, market, ltp, volume, json.dumps(raw) if raw else None),
         )
 
 
@@ -94,25 +106,25 @@ def latest_ticks(symbol: str, limit: int = 100) -> list[dict[str, Any]]:
         )
 
 
-def todays_candles(symbol: str) -> list[dict[str, Any]]:
-    """1-min candles for today, in chronological order."""
+def todays_candles(symbol: str, market: str = "IN") -> list[dict[str, Any]]:
+    """1-min candles for today (IST day), in chronological order."""
     with conn() as c:
         return list(
             c.execute(
                 """
                 SELECT bar_ts, open, high, low, close, tick_count
                 FROM candles_1m
-                WHERE symbol = %s
+                WHERE symbol = %s AND market = %s
                   AND bar_ts >= date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata'
                 ORDER BY bar_ts ASC
                 """,
-                (symbol,),
+                (symbol, market),
             )
         )
 
 
 def resample_candles(
-    symbol: str, minutes: int, lookback_bars: int = 0
+    symbol: str, minutes: int, lookback_bars: int = 0, market: str = "IN"
 ) -> list[dict[str, Any]]:
     """Aggregate today's `candles_1m` into `minutes`-minute OHLC bars.
 
@@ -131,7 +143,7 @@ def resample_candles(
     scale all of a session's N-min bars are cheap, so it is currently unused.
     """
     if minutes <= 1:
-        return todays_candles(symbol)
+        return todays_candles(symbol, market)
     with conn() as c:
         return list(
             c.execute(
@@ -150,17 +162,18 @@ def resample_candles(
                     (array_agg(close ORDER BY bar_ts DESC))[1] AS close,
                     SUM(tick_count)                            AS tick_count
                 FROM candles_1m
-                WHERE symbol = %s
+                WHERE symbol = %s AND market = %s
                   AND bar_ts >= date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata'
                 GROUP BY 1
                 ORDER BY bar_ts ASC
                 """,
-                (minutes, symbol),
+                (minutes, symbol, market),
             )
         )
 
 
-def first_candle_open_at_or_after(symbol: str, at_ts: datetime) -> Decimal | None:
+def first_candle_open_at_or_after(symbol: str, at_ts: datetime,
+                                  market: str = "IN") -> Decimal | None:
     """Open of the first 1-min candle with bar_ts >= at_ts (realistic fill bar).
 
     Returns None if no such bar exists yet (live-intraday: the next bar hasn't
@@ -172,29 +185,30 @@ def first_candle_open_at_or_after(symbol: str, at_ts: datetime) -> Decimal | Non
         row = c.execute(
             """
             SELECT open FROM candles_1m
-            WHERE symbol = %s AND bar_ts >= %s
+            WHERE symbol = %s AND market = %s AND bar_ts >= %s
             ORDER BY bar_ts ASC
             LIMIT 1
             """,
-            (symbol, at_ts),
+            (symbol, market, at_ts),
         ).fetchone()
     return Decimal(row["open"]) if row else None
 
 
-def roll_minute_candles() -> int:
+def roll_minute_candles(market: str = "IN") -> int:
     """
-    Fold raw ticks into 1-minute OHLC candles.
+    Fold this market's raw ticks into 1-minute OHLC candles.
 
-    Idempotent: re-running won't duplicate (ON CONFLICT DO UPDATE). Safe to
-    call from cron after every tick poll.
+    Idempotent: re-running won't duplicate (ON CONFLICT DO UPDATE on the
+    per-market candle key). Safe to call from cron after every tick poll.
 
     Returns: number of candle rows upserted.
     """
     with conn() as c:
         rows = c.execute(
             """
-            INSERT INTO candles_1m (symbol, bar_ts, open, high, low, close, tick_count)
+            INSERT INTO candles_1m (market, symbol, bar_ts, open, high, low, close, tick_count)
             SELECT
+                %s,
                 symbol,
                 date_trunc('minute', ts) AS bar_ts,
                 (array_agg(ltp ORDER BY ts ASC))[1]      AS open,
@@ -203,14 +217,15 @@ def roll_minute_candles() -> int:
                 (array_agg(ltp ORDER BY ts DESC))[1]     AS close,
                 COUNT(*)                                  AS tick_count
             FROM ticks
-            WHERE ts >= now() - interval '15 minutes'
+            WHERE ts >= now() - interval '15 minutes' AND market = %s
             GROUP BY symbol, date_trunc('minute', ts)
-            ON CONFLICT (symbol, bar_ts) DO UPDATE SET
+            ON CONFLICT (market, symbol, bar_ts) DO UPDATE SET
                 high       = EXCLUDED.high,
                 low        = EXCLUDED.low,
                 close      = EXCLUDED.close,
                 tick_count = EXCLUDED.tick_count
             RETURNING 1
-            """
+            """,
+            (market, market),
         ).fetchall()
         return len(rows)

@@ -34,6 +34,7 @@ from helm.config import (
 )
 from helm.data.store import conn, first_candle_open_at_or_after, insert_audit
 from helm.instrument import log_event
+from helm.markets import get_market
 from helm.orchestrator import risk
 from helm.wallet import wallet_state
 
@@ -91,6 +92,11 @@ def execute_signal(
         if sig["consumed"]:
             return ExecutionResult(False, None, f"signal {signal_id} already consumed")
 
+        # Which market this signal belongs to (default IN → every legacy row).
+        # Drives the cost model, fractional sizing, and per-market risk/wallet
+        # scoping. get_market raises only for an unknown key (IN always exists).
+        market_key = sig.get("market") or "IN"
+        mkt = get_market(market_key)
         signal_entry = Decimal(sig["entry_price"])
         # BUG #682: book the realistic fill — the OPEN of the first 1-min bar
         # AFTER the signal/decision, not the breakout bar's close. The strategy
@@ -103,7 +109,7 @@ def execute_signal(
         # the intended next bar.
         fill_at = (sig["ts"].astimezone(IST).replace(second=0, microsecond=0)
                    + timedelta(minutes=1))
-        realistic = first_candle_open_at_or_after(sig["symbol"], fill_at)
+        realistic = first_candle_open_at_or_after(sig["symbol"], fill_at, market=market_key)
         if realistic is not None:
             entry = realistic
             fill_source = "next_bar_open"
@@ -119,7 +125,7 @@ def execute_signal(
         # winners compound. Wallet may still be smaller than the cap (drawdown
         # or many open positions), in which case it dominates.
         # risk.evaluate() rechecks both ceilings as a final guard.
-        wallet = wallet_state()
+        wallet = wallet_state(market_key)
         base_cap = live_risk_limits().max_position_inr
         effective_cap = dynamic_position_cap(wallet.realised_net_pnl, base_cap)
         # F5 (flag-gated, default OFF): conviction-weighted sizing on the
@@ -136,7 +142,12 @@ def execute_signal(
                     conviction, conviction_floor, live_tunable("CONVICTION_SIZE_MIN_MULT"))
         budget = min(effective_cap, wallet.available)
         if qty is None:
-            sized_qty = int(budget // entry) if budget >= entry else 0
+            if mkt.fractional:
+                # Fractional venues (crypto): size to 8 dp rather than whole lots.
+                sized_qty = ((budget / entry).quantize(Decimal("0.00000001"))
+                             if entry > 0 and budget > 0 else Decimal("0"))
+            else:
+                sized_qty = int(budget // entry) if budget >= entry else 0
         else:
             sized_qty = qty
 
@@ -164,7 +175,7 @@ def execute_signal(
                       target=target, e2c=e2c, min_required=min_e2c)
         else:
             allowed, reason = risk.evaluate(sig["symbol"], sig["side"], sized_qty, entry,
-                                            strategy=sig.get("strategy"))
+                                            strategy=sig.get("strategy"), market=market_key)
 
         decision_row = c.execute(
             """
@@ -199,12 +210,13 @@ def execute_signal(
         c.execute(
             """
             INSERT INTO paper_trades
-                (decision_id, symbol, side, qty, entry_price, entry_ts, stop_loss, target, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'OPEN')
+                (decision_id, symbol, market, side, qty, entry_price, entry_ts, stop_loss, target, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'OPEN')
             """,
             (
                 decision_id,
                 sig["symbol"],
+                market_key,
                 sig["side"],
                 sized_qty,
                 entry,
@@ -222,7 +234,9 @@ def execute_signal(
             "decision_id": decision_id,
             "symbol": sig["symbol"],
             "side": sig["side"],
-            "qty": sized_qty,
+            # int for integer-lot venues (IN: unchanged); str for fractional
+            # (crypto) qty so the Decimal stays JSON-serializable + precise.
+            "qty": sized_qty if isinstance(sized_qty, int) else str(sized_qty),
             "entry": str(entry),
             "fill_source": fill_source,
             "signal_entry": str(signal_entry),

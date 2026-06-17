@@ -38,9 +38,10 @@ def main() -> int:
             if ltp is None:
                 failed.append(f"{market.key}:{symbol}")
                 continue
-            insert_tick(now, symbol, ltp, None, {"source": source, "market": market.key})
+            insert_tick(now, symbol, ltp, None, {"source": source, "market": market.key},
+                        market=market.key)
             inserted += 1
-        candle_upserts += roll_minute_candles()
+        candle_upserts += roll_minute_candles(market=market.key)
 
     if not ran_any:
         return 0

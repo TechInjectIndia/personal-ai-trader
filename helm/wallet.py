@@ -44,28 +44,47 @@ class WalletState:
     drawdown_pct: float        # negative if below initial, 0 otherwise
 
 
-def wallet_state() -> WalletState:
-    cfg = live_wallet_config()
-    initial = cfg.initial_capital_inr
-    goal = cfg.goal_capital_inr
+def _market_wallet_config(market: str) -> tuple[Decimal, Decimal]:
+    """(initial, goal) capital for a market. IN keeps using
+    live_wallet_config() (settings-overridable, byte-identical); other markets
+    read the per-market `wallets` table (currency-native amounts)."""
+    if market == "IN":
+        cfg = live_wallet_config()
+        return cfg.initial_capital_inr, cfg.goal_capital_inr
+    with conn() as c:
+        row = c.execute(
+            "SELECT initial_capital, goal_capital FROM wallets WHERE market = %s",
+            (market,),
+        ).fetchone()
+    if not row:
+        return Decimal("0"), Decimal("0")
+    goal = Decimal(row["goal_capital"]) if row["goal_capital"] is not None else Decimal("0")
+    return Decimal(row["initial_capital"]), goal
+
+
+def wallet_state(market: str = "IN") -> WalletState:
+    initial, goal = _market_wallet_config(market)
 
     # House = the incumbent's own rows only (NULL or 'house-claude'); competitor
-    # league trades must never leak into the house wallet. With no competitors
-    # this is identical to the previous unfiltered query.
+    # league trades must never leak into the house wallet. Scoped to one market
+    # so INR and USD books never co-mingle. For IN (every legacy row is 'IN')
+    # this is identical to the previous query.
     with conn() as c:
         realised = c.execute(
             f"""
             SELECT COALESCE(SUM(COALESCE(net_pnl_inr, pnl_inr)), 0) AS pnl
             FROM paper_trades
-            WHERE status = 'CLOSED' AND {HOUSE_TRADE_FILTER}
-            """
+            WHERE status = 'CLOSED' AND market = %s AND {HOUSE_TRADE_FILTER}
+            """,
+            (market,),
         ).fetchone()["pnl"]
         locked = c.execute(
             f"""
             SELECT COALESCE(SUM(qty * entry_price), 0) AS locked
             FROM paper_trades
-            WHERE status = 'OPEN' AND {HOUSE_TRADE_FILTER}
-            """
+            WHERE status = 'OPEN' AND market = %s AND {HOUSE_TRADE_FILTER}
+            """,
+            (market,),
         ).fetchone()["locked"]
 
     realised = Decimal(realised)

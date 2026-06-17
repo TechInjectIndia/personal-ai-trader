@@ -496,3 +496,70 @@ CREATE TABLE IF NOT EXISTS agent_instincts (
 );
 CREATE INDEX IF NOT EXISTS instincts_by_agent
     ON agent_instincts (competitor_id, status);
+
+
+-- ─── Multi-market expansion (FRD M2) ──────────────────────────────────
+-- The bot began single-market (NSE / INR / integer lots). These ADDITIVE,
+-- idempotent changes namespace all market data by `market` (default 'IN', so
+-- every legacy row IS the India book), widen qty to NUMERIC for fractional
+-- (crypto) sizing, make candle uniqueness per-market, and add a per-market
+-- wallets table. Re-running schema.sql is safe and leaves the IN book
+-- byte-identical (the India path keeps using helm.config/live_wallet_config()).
+
+ALTER TABLE ticks        ADD COLUMN IF NOT EXISTS market TEXT NOT NULL DEFAULT 'IN';
+ALTER TABLE candles_1m   ADD COLUMN IF NOT EXISTS market TEXT NOT NULL DEFAULT 'IN';
+ALTER TABLE signals      ADD COLUMN IF NOT EXISTS market TEXT NOT NULL DEFAULT 'IN';
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS market TEXT NOT NULL DEFAULT 'IN';
+ALTER TABLE daily_state  ADD COLUMN IF NOT EXISTS market TEXT NOT NULL DEFAULT 'IN';
+
+-- Fractional quantities (crypto). Existing integer values are preserved exactly;
+-- guarded so a re-run doesn't needlessly rewrite the table once already NUMERIC.
+DO $$ BEGIN
+    IF (SELECT data_type FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'paper_trades' AND column_name = 'qty') = 'integer' THEN
+        ALTER TABLE paper_trades ALTER COLUMN qty TYPE NUMERIC(18, 8);
+    END IF;
+    IF (SELECT data_type FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'decisions' AND column_name = 'qty') = 'integer' THEN
+        ALTER TABLE decisions ALTER COLUMN qty TYPE NUMERIC(18, 8);
+    END IF;
+END $$;
+
+-- Candle uniqueness is now per (market, symbol, bar_ts) — the same symbol string
+-- could in principle exist in two venues. Swap the PK only while it is still the
+-- old (symbol, bar_ts) shape (idempotent).
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint
+               WHERE conrelid = (current_schema() || '.candles_1m')::regclass
+                 AND contype = 'p'
+                 AND pg_get_constraintdef(oid) = 'PRIMARY KEY (symbol, bar_ts)') THEN
+        ALTER TABLE candles_1m DROP CONSTRAINT candles_1m_pkey;
+        ALTER TABLE candles_1m ADD PRIMARY KEY (market, symbol, bar_ts);
+    END IF;
+END $$;
+
+-- daily_state kill-switch is now per (trade_date, market). Swap PK only while it
+-- is still keyed by trade_date alone (idempotent).
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint
+               WHERE conrelid = (current_schema() || '.daily_state')::regclass
+                 AND contype = 'p'
+                 AND pg_get_constraintdef(oid) = 'PRIMARY KEY (trade_date)') THEN
+        ALTER TABLE daily_state DROP CONSTRAINT daily_state_pkey;
+        ALTER TABLE daily_state ADD PRIMARY KEY (trade_date, market);
+    END IF;
+END $$;
+
+-- One cash pool per market. IN keeps using helm.config/live_wallet_config()
+-- (settings-overridable) for byte-identical accounting; US/CRYPTO read here.
+CREATE TABLE IF NOT EXISTS wallets (
+    market          TEXT PRIMARY KEY,
+    currency        TEXT NOT NULL,
+    initial_capital NUMERIC(18, 2) NOT NULL,
+    goal_capital    NUMERIC(18, 2)
+);
+
+CREATE INDEX IF NOT EXISTS paper_trades_market_status ON paper_trades (market, status);
+CREATE INDEX IF NOT EXISTS signals_market_ts ON signals (market, ts DESC);
