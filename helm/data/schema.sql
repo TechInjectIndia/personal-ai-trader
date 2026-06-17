@@ -470,3 +470,29 @@ ALTER TABLE improvement_proposals
     ADD COLUMN IF NOT EXISTS cluster_id BIGINT REFERENCES proposal_clusters(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS proposals_by_cluster
     ON improvement_proposals (cluster_id) WHERE cluster_id IS NOT NULL;
+
+-- G4 instinct ledger: when a cluster is VERIFIED (its fix shipped + passed the
+-- eval-gate), the lesson is promoted into a durable per-agent "instinct" — what
+-- this agent has learned and is actively applying. Confidence DECAYS if the same
+-- theme keeps recurring after promotion (the retro loop re-flagging it = the
+-- lesson isn't holding); a decayed instinct reopens its source cluster so the
+-- loop re-fixes it. This is the self-correcting memory the loop lacked.
+CREATE TABLE IF NOT EXISTS agent_instincts (
+    id              BIGSERIAL PRIMARY KEY,
+    competitor_id   TEXT NOT NULL,                 -- owning agent (house-claude or persona id)
+    cluster_id      BIGINT REFERENCES proposal_clusters(id) ON DELETE SET NULL,
+    statement       TEXT NOT NULL,                 -- the lesson (cluster theme)
+    layer           TEXT,                          -- strategy/risk/decider/persona/...
+    artifact_kind   TEXT,                          -- persona | config | decider_prompt | strategy_config
+    confidence      NUMERIC(4,3) NOT NULL DEFAULT 1.0,
+    status          TEXT NOT NULL DEFAULT 'active'
+                        CHECK (status IN ('active', 'decayed', 'retired')),
+    hits            INT NOT NULL DEFAULT 0,         -- eval passes with no recurrence
+    misses          INT NOT NULL DEFAULT 0,        -- post-promotion recurrences (contradictions)
+    promoted_ts     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_eval_ts    TIMESTAMPTZ,
+    updated_ts      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (competitor_id, cluster_id)
+);
+CREATE INDEX IF NOT EXISTS instincts_by_agent
+    ON agent_instincts (competitor_id, status);

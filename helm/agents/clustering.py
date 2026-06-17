@@ -502,6 +502,12 @@ def reconcile_cluster_statuses() -> dict:
             c.execute("UPDATE improvement_proposals SET status = 'applied', "
                       "status_note = 'cluster verified', status_ts = now() "
                       "WHERE cluster_id = %s AND status = 'open'", (cid,))
+        # G4: promote the verified lesson into the owning agent's instinct ledger.
+        try:
+            from helm.agents.instincts import promote_cluster_to_instinct
+            promote_cluster_to_instinct(cid)
+        except Exception:  # noqa: BLE001 — ledger is additive, never gate the loop
+            pass
     for cid in reopened:
         set_cluster_status(cid, "open", note="task failed/reverted — reopened")
     return {"verified": verified, "reopened": reopened}

@@ -75,6 +75,16 @@ def main() -> int:
     rec = reconcile_cluster_statuses()
     if rec["verified"] or rec["reopened"]:
         print(f"reconciled: verified={rec['verified']} reopened={rec['reopened']}")
+    # 1b. G4: decay instincts whose agent kept losing after promotion (reopens
+    # the source cluster so the loop re-fixes the lesson). Fail-safe.
+    try:
+        from helm.agents.instincts import run_decay_pass
+        dec = run_decay_pass()
+        if dec["decayed"] or dec["reopened"]:
+            print(f"instincts: evaluated={dec['evaluated']} "
+                  f"decayed={dec['decayed']} reopened={dec['reopened']}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"instinct decay pass skipped: {str(exc)[:120]}")
     n_alerts = push_escalation_alerts()
     if n_alerts:
         print(f"escalation alerts pushed to Action Center: {n_alerts}")

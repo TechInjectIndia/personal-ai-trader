@@ -44,10 +44,17 @@ from helm.data.store import conn
 
 st.set_page_config(page_title="Helm — Competition League", page_icon="🏆", layout="wide")
 apply_theme()
+with conn() as _hc:
+    _n_active = list(_hc.execute(
+        "select count(*) n from competitors where status='active'"))[0]["n"]
+    _n_retired = list(_hc.execute(
+        "select count(*) n from competitors where status='retired'"))[0]["n"]
 page_header("Competition League",
-            "Five AI agents · ₹50k each · one human judge", icon="🏆")
-st.caption("Five AI agents, five isolated ₹50k wallets, same market. "
-           "Judge them on equity AND on how they reason.")
+            f"{_n_active} AI agents live · ₹50k each · one human judge", icon="🏆")
+st.caption(
+    f"{_n_active} AI agents, isolated ₹50k wallets, same market — judged on equity "
+    "AND on how they reason. A live, data-driven roster: "
+    f"{_n_retired} underperformers retired on P&L.")
 
 
 # ─── data helpers ──────────────────────────────────────────────────────
@@ -153,6 +160,33 @@ def _recent_invocations(competitor_id: str, limit: int = 60) -> list[dict]:
         ))
 
 
+def _invocation_health(competitor_id: str) -> tuple[int, float | None]:
+    """(#calls, ok-rate %) over a competitor's whole invocation history."""
+    with conn() as c:
+        r = c.execute(
+            "SELECT COUNT(*) AS n, AVG((ok)::int)::float AS ok_rate "
+            "FROM agent_invocations WHERE competitor_id = %s",
+            (competitor_id,),
+        ).fetchone()
+    n = int(r["n"])
+    ok = float(r["ok_rate"]) * 100 if r["ok_rate"] is not None else None
+    return n, ok
+
+
+def _retired_verdict(row) -> str:
+    """One honest line on why this model was cut — for the demo narrative."""
+    n_calls, ok = _invocation_health(row.competitor_id)
+    pnl = float(row.realised_net_pnl)
+    if ok is not None and ok < 50 and n_calls >= 20:
+        return (f"Backend unreliable — only {ok:.0f}% of {n_calls} calls returned "
+                "usable output. Never got a fair shot at competing.")
+    if row.trades == 0:
+        return "Never booked a trade in its window. Retired."
+    win = row.win_rate_pct or 0
+    return (f"Lost money on live paper capital — net ₹{pnl:,.0f} over "
+            f"{row.trades} trades ({win:.0f}% win). Retired on P&L.")
+
+
 def _build_card(row, persona: str, team: dict[str, dict],
                 q: dict[str, int]) -> tuple[str, bool]:
     """Compose one roster card; also report whether the agent is executing now."""
@@ -221,9 +255,12 @@ if not rows:
                "then `python scripts/seed_competitors.py`.")
     st.stop()
 
-leader = rows[0]
-active_trades = sum(r.open_positions for r in rows)
-total_trades = sum(r.trades for r in rows)
+active_rows = [r for r in rows if r.status != "retired"]
+retired_rows = [r for r in rows if r.status == "retired"]
+ranked = active_rows or rows
+leader = ranked[0]
+active_trades = sum(r.open_positions for r in ranked)
+total_trades = sum(r.trades for r in ranked)
 _lead_pnl = float(leader.realised_net_pnl)
 kpi_grid([
     kpi_card("Leader", leader.name, icon="medal",
@@ -249,7 +286,7 @@ _names = {r.competitor_id: r.name for r in rows}
 
 cards: list[str] = []
 live_count = 0
-for r in rows:
+for r in active_rows:
     card, is_live = _build_card(
         r, _personas_map.get(r.competitor_id, ""),
         _team.get(r.competitor_id, {}), _queues.get(r.competitor_id, {}),
@@ -281,21 +318,46 @@ table = pd.DataFrame([{
     "Trades": r.trades,
     "Win %": f"{r.win_rate_pct:.0f}" if r.win_rate_pct is not None else "—",
     "Available ₹": f"{float(r.available):,.0f}",
-} for r in rows])
+} for r in active_rows])
 wrapped_table(table, right_align=["Equity ₹", "P&L ₹", "Prog %", "Open",
                                   "Trades", "Win %", "Available ₹"])
+
+# ─── 2b. Retired — benchmarked and cut ─────────────────────────────────
+if retired_rows:
+    st.subheader("Retired — benchmarked and cut")
+    st.caption("These models traded real paper capital and underperformed. The "
+               "platform retires losers on live P&L — they stay visible here as "
+               "proof the competition is real, not a demo with a predetermined "
+               "winner.")
+    rcards: list[str] = []
+    for r in retired_rows:
+        pnl = float(r.realised_net_pnl)
+        pills = pill("retired", "closed") + pill(f"₹{pnl:,.0f}", "neg")
+        verdict = ('<div class="helm-team-label">Why retired</div>'
+                   '<div style="color:#9aa4b2;font-size:0.85rem;line-height:1.4;">'
+                   f"{_retired_verdict(r)}</div>")
+        foot_left = f"<b>₹{float(r.equity):,.0f}</b> · {r.progress_pct:+.1f}%"
+        foot_right = (f"{r.trades} trades · "
+                      f"{(r.win_rate_pct or 0):.0f}% win")
+        rcards.append(agent_card(
+            name=r.name, backend=r.backend,
+            persona=_personas_map.get(r.competitor_id, ""),
+            pills_html=pills, team_html=verdict,
+            footer_left=foot_left, footer_right=foot_right, live=False,
+        ))
+    agent_grid(rcards, cols=3)
 
 # ─── 3. Equity bar ─────────────────────────────────────────────────────
 st.subheader("Equity by competitor")
 equity_df = pd.DataFrame(
-    {"equity": [float(r.equity) for r in rows]},
-    index=[r.name for r in rows],
+    {"equity": [float(r.equity) for r in active_rows]},
+    index=[r.name for r in active_rows],
 )
 st.bar_chart(equity_df, height=260)
 
 # ─── 4. This week's mandates ───────────────────────────────────────────
 st.subheader(f"Mandates — week of {current_week_start():%d %b %Y}")
-freestyle = [r for r in rows if r.autonomy_level == "freestyle"]
+freestyle = [r for r in active_rows if r.autonomy_level == "freestyle"]
 any_mandate = False
 for r in freestyle:
     m = current_mandate(r.competitor_id)

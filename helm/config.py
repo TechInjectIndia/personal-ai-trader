@@ -198,6 +198,14 @@ EVAL_GATE_WINDOW_DAYS: int = 30   # look-back the gate re-prices
 # is surfaced to the human via the Action Center — the visible form of insight
 # that would otherwise sit structurally stuck (the cap-bug failure mode).
 ESCALATE_RECURRENCE: int = 5
+# G4 instinct ledger: when a verified cluster's theme RECURS this many times AFTER
+# promotion (the retro loop re-flagging it = the lesson isn't holding), the
+# instinct's confidence is decayed by INSTINCT_DECAY_FACTOR. Below
+# INSTINCT_CONFIDENCE_FLOOR the instinct is marked 'decayed' and its source
+# cluster is reopened so the loop re-fixes it — self-correcting memory.
+INSTINCT_RECURRENCE_DECAY_AT: int = 3
+INSTINCT_DECAY_FACTOR: float = 0.5
+INSTINCT_CONFIDENCE_FLOOR: float = 0.25
 
 
 def dynamic_position_cap(realised_pnl_inr: Decimal, base_cap_inr: Decimal) -> Decimal:

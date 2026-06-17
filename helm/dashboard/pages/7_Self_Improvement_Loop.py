@@ -245,6 +245,35 @@ try:
 except Exception as _e:  # never break the page on an analytics hiccup
     st.caption(f"economics unavailable: {_e}")
 
+# ─── Instinct ledger (G4: durable, self-correcting learnings) ──────────
+st.subheader("Instinct ledger — what it's learned")
+st.caption("Verified lessons promoted into durable memory the agent now applies. "
+           "Confidence DECAYS if the agent keeps losing after a lesson ships — a "
+           "decayed instinct reopens its source cluster so the loop re-fixes it.")
+try:
+    from helm.agents.instincts import active_instincts as _active_instincts
+
+    def _owns_instinct(cid: str) -> bool:
+        if agent_sel in (HOUSE_ID, "house", "house-claude"):
+            return cid in ("house", "house-claude", HOUSE_ID)
+        return cid == agent_sel
+
+    _ins = [r for r in _active_instincts() if _owns_instinct(r["competitor_id"])]
+    if not _ins:
+        st.caption("No instincts yet for this agent — they appear when one of its "
+                   "proposal clusters ships and passes the eval-gate.")
+    else:
+        wrapped_table(pd.DataFrame([{
+            "Lesson": (r["statement"] or "")[:90],
+            "Encoded in": r["artifact_kind"] or r["layer"] or "—",
+            "Confidence": f"{float(r['confidence']):.2f}",
+            "Status": "active" if r["status"] == "active" else "⚠ decayed",
+            "Hits": r["hits"], "Misses": r["misses"],
+            "Promoted": fmt_ist_short(r["promoted_ts"]),
+        } for r in _ins]), right_align=["Confidence", "Hits", "Misses"])
+except Exception as _ie:  # never break the page on the ledger
+    st.caption(f"instinct ledger unavailable: {_ie}")
+
 latest = _latest_snapshot(agent_sel)
 if not latest:
     st.warning(
