@@ -59,9 +59,9 @@ def test_symbol_keyed_blocks_any_strategy():
 def test_evaluate_flag_off_is_symbol_keyed(monkeypatch):
     """Flag OFF (default): a different strategy is still blocked by the open slot."""
     monkeypatch.setattr(risk, "live_flag", lambda name: False)
-    monkeypatch.setattr(risk, "kill_engaged_today", lambda c=None: False)
-    monkeypatch.setattr(risk, "todays_realized_pnl", lambda c=None: Decimal("0"))
-    monkeypatch.setattr(risk, "open_paper_positions", lambda c=None: 0)
+    monkeypatch.setattr(risk, "kill_engaged_today", lambda *a, **k: False)
+    monkeypatch.setattr(risk, "todays_realized_pnl", lambda *a, **k: Decimal("0"))
+    monkeypatch.setattr(risk, "open_paper_positions", lambda *a, **k: 0)
     _open_trade("bbands_zscore_20")
     allowed, reason = risk.evaluate(ZZZ, "BUY", 1, Decimal("100"),
                                     strategy="bbands_zscore_20_5m")
@@ -71,11 +71,11 @@ def test_evaluate_flag_off_is_symbol_keyed(monkeypatch):
 def test_evaluate_flag_on_allows_other_strategy(monkeypatch):
     """Flag ON: a different house strategy may open concurrently in the symbol."""
     monkeypatch.setattr(risk, "live_flag", lambda name: True)
-    monkeypatch.setattr(risk, "kill_engaged_today", lambda c=None: False)
-    monkeypatch.setattr(risk, "todays_realized_pnl", lambda c=None: Decimal("0"))
-    monkeypatch.setattr(risk, "open_paper_positions", lambda c=None: 0)
-    monkeypatch.setattr(risk, "signals_for_symbol_today", lambda s, c=None: 0)
-    monkeypatch.setattr(risk, "minutes_since_last_exit", lambda s, c=None: None)
+    monkeypatch.setattr(risk, "kill_engaged_today", lambda *a, **k: False)
+    monkeypatch.setattr(risk, "todays_realized_pnl", lambda *a, **k: Decimal("0"))
+    monkeypatch.setattr(risk, "open_paper_positions", lambda *a, **k: 0)
+    monkeypatch.setattr(risk, "signals_for_symbol_today", lambda *a, **k: 0)
+    monkeypatch.setattr(risk, "minutes_since_last_exit", lambda *a, **k: None)
     _open_trade("bbands_zscore_20")
     # different strategy → cleared past the open-position gate (downstream wallet
     # may still deny, but NOT for "open position")
@@ -92,9 +92,9 @@ def test_per_symbol_cap_blocks_pileup(monkeypatch):
     """Flag ON: once MAX_OPEN_POSITIONS_PER_SYMBOL are open in a symbol, a NEW
     strategy is blocked by the per-symbol cap (prevents correlated pile-up)."""
     monkeypatch.setattr(risk, "live_flag", lambda name: True)
-    monkeypatch.setattr(risk, "kill_engaged_today", lambda c=None: False)
-    monkeypatch.setattr(risk, "todays_realized_pnl", lambda c=None: Decimal("0"))
-    monkeypatch.setattr(risk, "open_paper_positions", lambda c=None: 0)
+    monkeypatch.setattr(risk, "kill_engaged_today", lambda *a, **k: False)
+    monkeypatch.setattr(risk, "todays_realized_pnl", lambda *a, **k: Decimal("0"))
+    monkeypatch.setattr(risk, "open_paper_positions", lambda *a, **k: 0)
     # MAX_OPEN_POSITIONS_PER_SYMBOL=2 → open two distinct strategies in ZZZ.
     _open_trade("orb_5m")
     _open_trade("orb_15m")

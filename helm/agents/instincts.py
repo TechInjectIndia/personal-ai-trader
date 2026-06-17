@@ -65,11 +65,13 @@ def _book_filter(competitor_id: str) -> tuple[str, tuple]:
     return "competitor_id = %s", (competitor_id,)
 
 
-def promote_cluster_to_instinct(cluster_id: int) -> dict | None:
+def promote_cluster_to_instinct(cluster_id: int, market: str | None = None) -> dict | None:
     """Promote a verified cluster into a durable per-agent instinct (idempotent).
 
     Returns the instinct row dict, or None if the cluster is missing. Keeps the
-    original ``promoted_ts`` on re-promotion so the decay window is stable."""
+    original ``promoted_ts`` on re-promotion so the decay window is stable.
+    ``market`` scopes the lesson (None = market-agnostic, the default — applies
+    everywhere, byte-identical to pre-S5)."""
     with conn() as c:
         clu = c.execute(
             "SELECT id, theme, layer, target_surface, confidence "
@@ -85,21 +87,23 @@ def promote_cluster_to_instinct(cluster_id: int) -> dict | None:
         row = c.execute(
             """
             INSERT INTO agent_instincts
-                (competitor_id, cluster_id, statement, layer, artifact_kind,
+                (competitor_id, cluster_id, statement, layer, artifact_kind, market,
                  confidence, status, promoted_ts, updated_ts)
-            VALUES (%s, %s, %s, %s, %s, %s, 'active', now(), now())
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'active', now(), now())
             ON CONFLICT (competitor_id, cluster_id) DO UPDATE SET
                 statement = EXCLUDED.statement,
                 layer = EXCLUDED.layer,
                 artifact_kind = EXCLUDED.artifact_kind,
+                -- keep an existing market scope rather than wiping it with NULL
+                market = COALESCE(EXCLUDED.market, agent_instincts.market),
                 -- re-promotion of a previously-decayed instinct revives it
                 status = 'active',
                 confidence = GREATEST(agent_instincts.confidence, EXCLUDED.confidence),
                 updated_ts = now()
-            RETURNING id, competitor_id, cluster_id, confidence, status
+            RETURNING id, competitor_id, cluster_id, market, confidence, status
             """,
             (surface, cluster_id, (clu["theme"] or "")[:1000], clu["layer"],
-             artifact, conf),
+             artifact, market, conf),
         ).fetchone()
     insert_audit("agents", "instinct_promoted",
                  {"cluster_id": cluster_id, "competitor_id": row["competitor_id"],
@@ -107,18 +111,20 @@ def promote_cluster_to_instinct(cluster_id: int) -> dict | None:
     return dict(row)
 
 
-def _trades_since(c, competitor_id: str, since) -> tuple[int, Decimal]:
-    """(#closed trades, net P&L) for an agent on trades closed after ``since``."""
+def _trades_since(c, competitor_id: str, since,
+                  market: str | None = None) -> tuple[int, Decimal]:
+    """(#closed trades, net P&L) for an agent on trades closed after ``since``.
+    Scoped to ``market`` when the instinct is market-specific (None = all markets,
+    byte-identical to pre-S5)."""
     where, params = _book_filter(competitor_id)
-    r = c.execute(
-        f"""
-        SELECT COUNT(*) AS n,
-               COALESCE(SUM(COALESCE(net_pnl_inr, pnl_inr)), 0) AS net
-        FROM paper_trades
-        WHERE {where} AND status = 'CLOSED' AND exit_ts > %s
-        """,
-        (*params, since),
-    ).fetchone()
+    sql = (f"SELECT COUNT(*) AS n, "
+           f"COALESCE(SUM(COALESCE(net_pnl_inr, pnl_inr)), 0) AS net "
+           f"FROM paper_trades WHERE {where} AND status = 'CLOSED' AND exit_ts > %s")
+    args: tuple = (*params, since)
+    if market is not None:
+        sql += " AND market = %s"
+        args = (*params, since, market)
+    r = c.execute(sql, args).fetchone()
     return int(r["n"]), Decimal(r["net"])
 
 
@@ -128,14 +134,14 @@ def run_decay_pass() -> dict:
     evaluated, decayed, reopened = 0, [], []
     with conn() as c:
         instincts = list(c.execute(
-            "SELECT id, competitor_id, cluster_id, confidence, misses, hits, "
+            "SELECT id, competitor_id, cluster_id, market, confidence, misses, hits, "
             "promoted_ts, last_eval_ts FROM agent_instincts WHERE status = 'active'"))
 
     for ins in instincts:
         since = ins["last_eval_ts"] or ins["promoted_ts"]
         try:
             with conn() as c:
-                n, net = _trades_since(c, ins["competitor_id"], since)
+                n, net = _trades_since(c, ins["competitor_id"], since, ins["market"])
                 if n < _MIN_TRADES_TO_JUDGE:
                     continue  # not enough new evidence to judge
                 evaluated += 1
@@ -179,7 +185,7 @@ def active_instincts(competitor_id: str | None = None) -> list[dict]:
     """Ledger rows for the dashboard — what each agent has learned and is
     applying. All statuses (active/decayed) so the UI can show self-correction."""
     sql = ("SELECT id, competitor_id, cluster_id, statement, layer, artifact_kind, "
-           "confidence, status, hits, misses, promoted_ts, last_eval_ts "
+           "market, confidence, status, hits, misses, promoted_ts, last_eval_ts "
            "FROM agent_instincts")
     args: tuple = ()
     if competitor_id is not None:
@@ -190,4 +196,21 @@ def active_instincts(competitor_id: str | None = None) -> list[dict]:
         return list(c.execute(sql, args))
 
 
-__all__ = ["promote_cluster_to_instinct", "run_decay_pass", "active_instincts"]
+def lessons_for(competitor_id: str, market: str | None = None) -> list[dict]:
+    """Active lessons an agent should APPLY when operating — its own
+    market-specific instincts PLUS market-agnostic ones, highest-confidence
+    first. This is the read an agent's decider/persona uses to carry forward what
+    it has learned (per (agent, market)). With market=None, returns all active
+    instincts for the agent regardless of scope."""
+    sql = ("SELECT id, cluster_id, statement, layer, artifact_kind, confidence, market "
+           "FROM agent_instincts WHERE competitor_id = %s AND status = 'active'")
+    args: tuple = (competitor_id,)
+    if market is not None:
+        sql += " AND (market IS NULL OR market = %s)"
+        args = (competitor_id, market)
+    sql += " ORDER BY confidence DESC, promoted_ts DESC"
+    with conn() as c:
+        return list(c.execute(sql, args))
+
+
+__all__ = ["promote_cluster_to_instinct", "run_decay_pass", "active_instincts", "lessons_for"]

@@ -25,15 +25,17 @@ from decimal import Decimal
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
-from helm.charges import round_trip_breakdown
 from helm.config import (
+    SAFETY_MAX_CONSECUTIVE_LOSSES,
+    SAFETY_NOTIONAL_CEILING_MULT,
     dynamic_position_cap,
     live_flag,
-    live_risk_limits,
+    live_risk_limits_for,
     live_tunable,
 )
 from helm.data.store import conn, first_candle_open_at_or_after, insert_audit
 from helm.instrument import log_event
+from helm.markets import get_market
 from helm.orchestrator import risk
 from helm.wallet import wallet_state
 
@@ -46,14 +48,15 @@ class ExecutionResult(NamedTuple):
     message: str
 
 
-def _edge_to_cost(side: str, qty: int, entry: Decimal, target: Decimal) -> Decimal:
+def _edge_to_cost(cost_model, side: str, qty, entry: Decimal, target: Decimal) -> Decimal:
     """Gross reward to target as a multiple of the expected round-trip cost.
 
-    Uses the SAME charge model the realized P&L uses (round_trip_breakdown), so
-    the gate and the books agree. Returns Decimal('0') when cost is zero so the
-    caller treats a degenerate position as un-tradeable rather than dividing by 0.
+    Uses the trade's MARKET cost model (the same one the realized P&L uses), so
+    the gate and the books agree per venue. Returns Decimal('0') when cost is
+    zero so the caller treats a degenerate position as un-tradeable rather than
+    dividing by 0.
     """
-    exp_cost = round_trip_breakdown(side, qty, entry, target).total
+    exp_cost = cost_model.round_trip_breakdown(side, qty, entry, target).total
     gross_reward = abs(target - entry) * qty
     return (gross_reward / exp_cost) if exp_cost > 0 else Decimal("0")
 
@@ -91,6 +94,11 @@ def execute_signal(
         if sig["consumed"]:
             return ExecutionResult(False, None, f"signal {signal_id} already consumed")
 
+        # Which market this signal belongs to (default IN → every legacy row).
+        # Drives the cost model, fractional sizing, and per-market risk/wallet
+        # scoping. get_market raises only for an unknown key (IN always exists).
+        market_key = sig.get("market") or "IN"
+        mkt = get_market(market_key)
         signal_entry = Decimal(sig["entry_price"])
         # BUG #682: book the realistic fill — the OPEN of the first 1-min bar
         # AFTER the signal/decision, not the breakout bar's close. The strategy
@@ -103,7 +111,7 @@ def execute_signal(
         # the intended next bar.
         fill_at = (sig["ts"].astimezone(IST).replace(second=0, microsecond=0)
                    + timedelta(minutes=1))
-        realistic = first_candle_open_at_or_after(sig["symbol"], fill_at)
+        realistic = first_candle_open_at_or_after(sig["symbol"], fill_at, market=market_key)
         if realistic is not None:
             entry = realistic
             fill_source = "next_bar_open"
@@ -119,8 +127,8 @@ def execute_signal(
         # winners compound. Wallet may still be smaller than the cap (drawdown
         # or many open positions), in which case it dominates.
         # risk.evaluate() rechecks both ceilings as a final guard.
-        wallet = wallet_state()
-        base_cap = live_risk_limits().max_position_inr
+        wallet = wallet_state(market_key)
+        base_cap = live_risk_limits_for(market_key).max_position_inr
         effective_cap = dynamic_position_cap(wallet.realised_net_pnl, base_cap)
         # F5 (flag-gated, default OFF): conviction-weighted sizing on the
         # auto-sized path. When enabled with a supplied confidence, scale the cap
@@ -136,11 +144,38 @@ def execute_signal(
                     conviction, conviction_floor, live_tunable("CONVICTION_SIZE_MIN_MULT"))
         budget = min(effective_cap, wallet.available)
         if qty is None:
-            sized_qty = int(budget // entry) if budget >= entry else 0
+            if mkt.fractional:
+                # Fractional venues (crypto): size to 8 dp rather than whole lots.
+                sized_qty = ((budget / entry).quantize(Decimal("0.00000001"))
+                             if entry > 0 and budget > 0 else Decimal("0"))
+            else:
+                sized_qty = int(budget // entry) if budget >= entry else 0
         else:
             sized_qty = qty
 
         target = sig["target"]
+        # S4 trading-safety backstop (flag-gated; OFF → byte-identical). An
+        # INDEPENDENT pre-trade guard on top of risk.evaluate: hard notional
+        # ceiling, worst-case loss bound, and stop-side sanity. A trade must pass
+        # both this and the risk gate.
+        safety_ok, safety_reason = True, "ok"
+        if live_flag("SAFETY_GUARD_ENABLED") and sized_qty and sized_qty > 0:
+            from helm.safety import pre_trade_check, should_halt
+            _limits = live_risk_limits_for(market_key)
+            safety_ok, safety_reason = pre_trade_check(
+                sig["side"], sized_qty, entry, Decimal(sig["stop_loss"]), market_key,
+                hard_ceiling=SAFETY_NOTIONAL_CEILING_MULT * effective_cap,
+                max_loss=_limits.daily_loss_kill_inr,
+            )
+            # Circuit breaker: halt the day after a hard daily loss OR a
+            # consecutive-loss streak (the streak arm is new vs the risk gate).
+            if safety_ok and should_halt(
+                risk.todays_realized_pnl(None, market_key),
+                risk.consecutive_losses(None, market_key),
+                max_daily_loss=_limits.daily_loss_kill_inr,
+                max_consecutive=SAFETY_MAX_CONSECUTIVE_LOSSES,
+            ):
+                safety_ok, safety_reason = False, "circuit breaker tripped"
         if conviction_block:
             allowed, reason = False, (
                 f"low_conviction (conf={conviction:.2f} < floor {conviction_floor})"
@@ -152,8 +187,10 @@ def execute_signal(
                 f"wallet has ₹{wallet.available} available, one share of "
                 f"{sig['symbol']} costs ₹{entry}"
             )
+        elif not safety_ok:
+            allowed, reason = False, f"safety_guard: {safety_reason}"
         elif target is not None and (
-            e2c := _edge_to_cost(sig["side"], sized_qty, entry, Decimal(target))
+            e2c := _edge_to_cost(mkt.costs, sig["side"], sized_qty, entry, Decimal(target))
         ) < (min_e2c := live_tunable("MIN_EDGE_TO_COST")):
             # F2: target move too small relative to round-trip cost — a
             # guaranteed net loser even if right. Skip via the shared SKIP tail.
@@ -164,7 +201,7 @@ def execute_signal(
                       target=target, e2c=e2c, min_required=min_e2c)
         else:
             allowed, reason = risk.evaluate(sig["symbol"], sig["side"], sized_qty, entry,
-                                            strategy=sig.get("strategy"))
+                                            strategy=sig.get("strategy"), market=market_key)
 
         decision_row = c.execute(
             """
@@ -199,12 +236,13 @@ def execute_signal(
         c.execute(
             """
             INSERT INTO paper_trades
-                (decision_id, symbol, side, qty, entry_price, entry_ts, stop_loss, target, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'OPEN')
+                (decision_id, symbol, market, side, qty, entry_price, entry_ts, stop_loss, target, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'OPEN')
             """,
             (
                 decision_id,
                 sig["symbol"],
+                market_key,
                 sig["side"],
                 sized_qty,
                 entry,
@@ -222,7 +260,9 @@ def execute_signal(
             "decision_id": decision_id,
             "symbol": sig["symbol"],
             "side": sig["side"],
-            "qty": sized_qty,
+            # int for integer-lot venues (IN: unchanged); str for fractional
+            # (crypto) qty so the Decimal stays JSON-serializable + precise.
+            "qty": sized_qty if isinstance(sized_qty, int) else str(sized_qty),
             "entry": str(entry),
             "fill_source": fill_source,
             "signal_entry": str(signal_entry),

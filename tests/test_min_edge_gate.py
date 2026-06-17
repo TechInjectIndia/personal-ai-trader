@@ -14,7 +14,10 @@ import pytest
 
 from helm import config
 from helm.data.store import conn
+from helm.markets.costs import ZerodhaCosts
 from scripts.paper_execute import _edge_to_cost, execute_signal
+
+_IN_COSTS = ZerodhaCosts()   # IN cost model == helm.charges (E2C math unchanged)
 
 ZZZ = "ZZZF2"
 
@@ -45,21 +48,21 @@ def test_min_edge_to_cost_is_decimal():
 def test_edge_to_cost_thin_below_threshold():
     entry = Decimal("1000")
     # ~0.2% move on 12 shares: reward ~Rs24 vs ~Rs13 round-trip cost -> E2C < 3.
-    assert _edge_to_cost("BUY", 12, entry, entry + Decimal("2")) < config.MIN_EDGE_TO_COST
+    assert _edge_to_cost(_IN_COSTS, "BUY", 12, entry, entry + Decimal("2")) < config.MIN_EDGE_TO_COST
 
 
 def test_edge_to_cost_fat_above_threshold():
     entry = Decimal("1000")
     # ~1.5% move on 12 shares: reward ~Rs180 -> E2C well above 3.
-    assert _edge_to_cost("BUY", 12, entry, entry + Decimal("15")) >= config.MIN_EDGE_TO_COST
+    assert _edge_to_cost(_IN_COSTS, "BUY", 12, entry, entry + Decimal("15")) >= config.MIN_EDGE_TO_COST
 
 
-def test_edge_to_cost_zero_cost_guard(monkeypatch):
-    monkeypatch.setattr(
-        "scripts.paper_execute.round_trip_breakdown",
-        lambda *a, **k: SimpleNamespace(total=Decimal("0")),
-    )
-    assert _edge_to_cost("BUY", 10, Decimal("100"), Decimal("110")) == Decimal("0")
+def test_edge_to_cost_zero_cost_guard():
+    class _ZeroCost:
+        def round_trip_breakdown(self, *a, **k):
+            return SimpleNamespace(total=Decimal("0"))
+
+    assert _edge_to_cost(_ZeroCost(), "BUY", 10, Decimal("100"), Decimal("110")) == Decimal("0")
 
 
 # ── Gate integration (real DB chokepoint) ───────────────────────────

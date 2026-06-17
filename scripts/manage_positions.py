@@ -14,20 +14,15 @@ from datetime import datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-import yfinance as yf
-
-from helm.charges import round_trip_breakdown
 from helm.config import (
     EXIT_BREAKEVEN_CUSHION_R,
     EXIT_BREAKEVEN_TRIGGER_R,
     EXIT_TIME_DECAY_MAX_LOCK,
     EXIT_TIME_DECAY_START_MIN,
     HOUSE_COMPETITOR_ID,
-    MARKET_CLOSE,
-    MARKET_OPEN,
-    SQUARE_OFF_AT,
 )
 from helm.data.store import conn, insert_audit
+from helm.markets import get_market
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -36,11 +31,8 @@ def _now_ist() -> datetime:
     return datetime.now(IST)
 
 
-def _ltp(symbol: str) -> Decimal | None:
-    try:
-        return Decimal(str(yf.Ticker(f"{symbol}.NS").fast_info.last_price))
-    except Exception:
-        return None
+def _ltp(market, symbol: str) -> Decimal | None:
+    return market.data.last_price(symbol)
 
 
 def _is_house(trade: dict) -> bool:
@@ -55,7 +47,14 @@ def _close_trade(c, trade: dict, exit_price: Decimal, reason: str) -> None:
     entry = Decimal(trade["entry_price"])
     side = trade["side"]
     pnl = (exit_price - entry) * qty if side == "BUY" else (entry - exit_price) * qty
-    breakdown = round_trip_breakdown(side, qty, entry, exit_price)
+    # Cost model is the trade's own market (IN → ZerodhaCosts, byte-identical).
+    try:
+        mkt = get_market(trade.get("market") or "IN")
+    except KeyError:
+        insert_audit("manage_positions", "unknown_market_cost_fallback",
+                     {"trade_id": trade["id"], "market": trade.get("market")})
+        mkt = get_market("IN")
+    breakdown = mkt.costs.round_trip_breakdown(side, qty, entry, exit_price)
     charges = breakdown.total
     net_pnl = pnl - charges
     c.execute(
@@ -79,7 +78,7 @@ def _close_trade(c, trade: dict, exit_price: Decimal, reason: str) -> None:
             "trade_id": trade["id"],
             "symbol": trade["symbol"],
             "side": side,
-            "qty": qty,
+            "qty": float(qty),
             "entry": str(entry),
             "exit": str(exit_price),
             "pnl_inr": str(pnl),
@@ -179,98 +178,116 @@ def _tighten_stop(
 
 
 def main() -> int:
-    now = _now_ist()
-    if now.weekday() >= 5:
-        return 0
-    if not (MARKET_OPEN <= now.time() <= MARKET_CLOSE):
-        return 0
-
-    eod = now.time() >= SQUARE_OFF_AT
-
     with conn() as c:
         opens = list(c.execute("SELECT * FROM paper_trades WHERE status = 'OPEN'"))
-        if not opens:
-            return 0
+    if not opens:
+        return 0
 
-        # Per-position snapshot for the activity log: shows what was watched,
-        # the live LTP, distance to stop/target, and whether the run closed
-        # anything. Only writes audit when there were positions to manage.
-        snapshots: list[dict] = []
-        closed = 0
-        for t in opens:
-            ltp = _ltp(t["symbol"])
-            entry = Decimal(t["entry_price"])
-            stop = Decimal(t["stop_loss"])
-            target = Decimal(t["target"]) if t["target"] is not None else None
-            side = t["side"]
-            outcome = "held"
-            reason = None
+    # Group open positions by market so each book is managed on its OWN clock,
+    # calendar, data adapter and cost model. IN-only books reproduce the prior
+    # behaviour exactly (one IST-windowed, 15:15-square-off pass).
+    by_market: dict[str, list[dict]] = {}
+    for t in opens:
+        by_market.setdefault(t.get("market") or "IN", []).append(t)
 
-            # Give-back protection (task #681): ratchet the stop toward the
-            # favorable side BEFORE the EOD/STOP/TARGET chain, so a price already
-            # through the tightened stop exits this same minute (no 1-min lag).
-            # Guarded by `not eod` so the EOD square-off precedence is preserved.
-            #
-            # HOUSE-ONLY: this loop walks ALL open rows (house + every freestyle
-            # competitor), but the lock-in is a house risk policy. Competitors
-            # author and own their own stops — overriding them would contaminate
-            # the league. Gate on HOUSE_TRADE_FILTER semantics (NULL or house).
-            if _is_house(t) and ltp is not None and not eod and target is not None:
-                t_rem = (
-                    Decimal(
-                        str(
-                            (datetime.combine(now.date(), SQUARE_OFF_AT, tzinfo=IST) - now)
-                            .total_seconds()
-                        )
-                    )
-                    / Decimal("60")
+    snapshots: list[dict] = []
+    total_closed = 0
+    managed: list[str] = []
+
+    for mkey, trades in by_market.items():
+        try:
+            market = get_market(mkey)
+        except KeyError:
+            # A rogue/stale market value must not abort managing OTHER markets'
+            # open positions (incl. live IN stops/targets). Skip + audit loudly.
+            insert_audit("manage_positions", "unknown_market",
+                         {"market": mkey, "open_trades": len(trades)})
+            continue
+        now = datetime.now(market.calendar.tz)
+        if not market.calendar.is_market_open(now):
+            continue  # venue closed → no LTP, nothing to manage (silent no-op)
+        managed.append(mkey)
+        square_off = market.calendar.square_off_at()
+        eod = square_off is not None and now.time() >= square_off
+        max_hold = market.max_hold_min
+
+        with conn() as c:
+            for t in trades:
+                ltp = _ltp(market, t["symbol"])
+                entry = Decimal(t["entry_price"])
+                stop = Decimal(t["stop_loss"])
+                target = Decimal(t["target"]) if t["target"] is not None else None
+                side = t["side"]
+                qty = Decimal(t["qty"])
+                outcome = "held"
+                reason = None
+
+                # Give-back ratchet (#681): house + SESSIONED venues only (it is
+                # keyed to the session close). Crypto (square_off None) skips it.
+                if (_is_house(t) and ltp is not None and not eod and target is not None
+                        and square_off is not None):
+                    cutoff = datetime.combine(now.date(), square_off, tzinfo=market.calendar.tz)
+                    t_rem = Decimal(str((cutoff - now).total_seconds())) / Decimal("60")
+                    stop = _tighten_stop(c, t, ltp, entry, stop, target, side, t_rem)
+
+                # 24/7 time-stop (crypto): force-close a position held past
+                # max_hold_min — the EOD-flat analog for a venue with no close.
+                time_stopped = (
+                    square_off is None and max_hold is not None and t["entry_ts"] is not None
+                    and (now - t["entry_ts"]).total_seconds() / 60.0 >= max_hold
                 )
-                stop = _tighten_stop(c, t, ltp, entry, stop, target, side, t_rem)
 
-            if ltp is None:
-                outcome = "no_ltp"
-            elif eod:
-                _close_trade(c, t, ltp, "EOD")
-                outcome, reason, closed = "closed", "EOD", closed + 1
-            elif side == "BUY":
-                if ltp <= stop:
-                    _close_trade(c, t, ltp, "STOP")
-                    outcome, reason, closed = "closed", "STOP", closed + 1
-                elif target and ltp >= target:
-                    _close_trade(c, t, ltp, "TARGET")
-                    outcome, reason, closed = "closed", "TARGET", closed + 1
-            else:  # SELL/SHORT
-                if ltp >= stop:
-                    _close_trade(c, t, ltp, "STOP")
-                    outcome, reason, closed = "closed", "STOP", closed + 1
-                elif target and ltp <= target:
-                    _close_trade(c, t, ltp, "TARGET")
-                    outcome, reason, closed = "closed", "TARGET", closed + 1
+                if ltp is None:
+                    outcome = "no_ltp"
+                elif eod:
+                    _close_trade(c, t, ltp, "EOD")
+                    outcome, reason, total_closed = "closed", "EOD", total_closed + 1
+                elif time_stopped:
+                    _close_trade(c, t, ltp, "TIME")
+                    outcome, reason, total_closed = "closed", "TIME", total_closed + 1
+                elif side == "BUY":
+                    if ltp <= stop:
+                        _close_trade(c, t, ltp, "STOP")
+                        outcome, reason, total_closed = "closed", "STOP", total_closed + 1
+                    elif target and ltp >= target:
+                        _close_trade(c, t, ltp, "TARGET")
+                        outcome, reason, total_closed = "closed", "TARGET", total_closed + 1
+                else:  # SELL/SHORT
+                    if ltp >= stop:
+                        _close_trade(c, t, ltp, "STOP")
+                        outcome, reason, total_closed = "closed", "STOP", total_closed + 1
+                    elif target and ltp <= target:
+                        _close_trade(c, t, ltp, "TARGET")
+                        outcome, reason, total_closed = "closed", "TARGET", total_closed + 1
 
-            snapshots.append({
-                "trade_id": t["id"],
-                "symbol": t["symbol"],
-                "side": side,
-                "qty": t["qty"],
-                "entry": float(entry),
-                "stop": float(stop),
-                "target": float(target) if target is not None else None,
-                "ltp": float(ltp) if ltp is not None else None,
-                "unrealized_inr": (
-                    float((ltp - entry) * t["qty"]) if (ltp is not None and side == "BUY")
-                    else float((entry - ltp) * t["qty"]) if ltp is not None
-                    else None
-                ),
-                "outcome": outcome,
-                "reason": reason,
-            })
+                snapshots.append({
+                    "market": mkey,
+                    "trade_id": t["id"],
+                    "symbol": t["symbol"],
+                    "side": side,
+                    "qty": float(qty),
+                    "entry": float(entry),
+                    "stop": float(stop),
+                    "target": float(target) if target is not None else None,
+                    "ltp": float(ltp) if ltp is not None else None,
+                    "unrealized": (
+                        float((ltp - entry) * qty) if (ltp is not None and side == "BUY")
+                        else float((entry - ltp) * qty) if ltp is not None
+                        else None
+                    ),
+                    "outcome": outcome,
+                    "reason": reason,
+                })
 
-        insert_audit(
-            "manage_positions",
-            "position_check",
-            {"watched": len(opens), "closed": closed, "eod": eod, "snapshots": snapshots},
-        )
+    if not managed:
+        return 0
 
+    insert_audit(
+        "manage_positions",
+        "position_check",
+        {"watched": len(opens), "closed": total_closed, "markets": managed,
+         "snapshots": snapshots},
+    )
     return 0
 
 

@@ -29,6 +29,8 @@ RR_MULTIPLIER = Decimal("1.5")
 
 
 class OpeningRangeBreakout(Strategy):
+    session_required = True   # opening range needs a session open (no 24/7 crypto)
+
     def __init__(self, or_minutes: int = 15) -> None:
         self.or_minutes = or_minutes
         self._name = f"orb_{or_minutes}m"

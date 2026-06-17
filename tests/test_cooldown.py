@@ -61,16 +61,16 @@ def test_minutes_since_last_exit_recent():
 
 def _pass_upstream(monkeypatch):
     """Make every gate BEFORE the cooldown check pass, so we isolate it."""
-    monkeypatch.setattr(risk, "kill_engaged_today", lambda c=None: False)
-    monkeypatch.setattr(risk, "todays_realized_pnl", lambda c=None: Decimal("0"))
-    monkeypatch.setattr(risk, "open_paper_positions", lambda c=None: 0)
-    monkeypatch.setattr(risk, "has_open_position", lambda s, c=None, **kw: False)
-    monkeypatch.setattr(risk, "signals_for_symbol_today", lambda s, c=None: 0)
+    monkeypatch.setattr(risk, "kill_engaged_today", lambda *a, **k: False)
+    monkeypatch.setattr(risk, "todays_realized_pnl", lambda *a, **k: Decimal("0"))
+    monkeypatch.setattr(risk, "open_paper_positions", lambda *a, **k: 0)
+    monkeypatch.setattr(risk, "has_open_position", lambda *a, **k: False)
+    monkeypatch.setattr(risk, "signals_for_symbol_today", lambda *a, **k: 0)
 
 
 def test_cooldown_blocks_within_window(monkeypatch):
     _pass_upstream(monkeypatch)
-    monkeypatch.setattr(risk, "minutes_since_last_exit", lambda s, c=None: Decimal("10"))
+    monkeypatch.setattr(risk, "minutes_since_last_exit", lambda *a, **k: Decimal("10"))
     allowed, reason = risk.evaluate("INFY", "BUY", 1, Decimal("100"))
     assert allowed is False
     assert "cooldown" in reason
@@ -78,13 +78,13 @@ def test_cooldown_blocks_within_window(monkeypatch):
 
 def test_cooldown_clears_after_window(monkeypatch):
     _pass_upstream(monkeypatch)
-    monkeypatch.setattr(risk, "minutes_since_last_exit", lambda s, c=None: Decimal("60"))
+    monkeypatch.setattr(risk, "minutes_since_last_exit", lambda *a, **k: Decimal("60"))
     _, reason = risk.evaluate("INFY", "BUY", 1, Decimal("100"))
     assert "cooldown" not in reason  # passed the cooldown gate (downstream may still deny)
 
 
 def test_cooldown_skipped_when_no_prior_trade(monkeypatch):
     _pass_upstream(monkeypatch)
-    monkeypatch.setattr(risk, "minutes_since_last_exit", lambda s, c=None: None)
+    monkeypatch.setattr(risk, "minutes_since_last_exit", lambda *a, **k: None)
     _, reason = risk.evaluate("INFY", "BUY", 1, Decimal("100"))
     assert "cooldown" not in reason

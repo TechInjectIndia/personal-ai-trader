@@ -5,7 +5,7 @@ Values are intentionally hardcoded in code (not a YAML file) — for a single-us
 bot, code is the config. Edit and PM2-reload to change.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import time
 from decimal import Decimal
 
@@ -37,6 +37,43 @@ WATCHLIST: list[str] = [
 ]
 
 EXCHANGE = "NSE"
+
+
+# --- Multi-market enablement (FRD M1) ---
+# Which markets the cron loop runs. IN (NSE) is the incumbent and the only one
+# enabled by default; US and CRYPTO are registered (helm.markets.registry) but
+# stay dark until their phases are validated and the human flips the flag here.
+# Editing this + PM2 reload is the single switch that turns a venue on/off.
+MARKET_ENABLED: dict[str, bool] = {
+    "IN": True,
+    "US": False,
+    "CRYPTO": False,
+}
+
+
+# --- Crypto market (FRD M6) — paper only; enable via MARKET_ENABLED["CRYPTO"] ---
+CRYPTO_WATCHLIST: list[str] = ["BTC", "ETH"]   # majors: best liquidity + free data
+CRYPTO_EXCHANGE = "binance"                     # ccxt public OHLCV venue
+CRYPTO_QUOTE = "USDT"                            # BTC -> BTC/USDT
+CRYPTO_TAKER_BPS: Decimal = Decimal("0.0010")   # 0.10% Binance spot taker (per leg)
+CRYPTO_MAX_HOLD_MIN = 240                        # 24/7 time-stop (4h): the EOD-flat analog
+
+
+# --- US equities market (FRD M7) — paper only; enable via MARKET_ENABLED["US"] ---
+# Liquid US large caps + index ETFs (the US analog of the NIFTYBEES/BANKBEES
+# picks). Bare tickers (yfinance US / Alpaca; no .NS). Full strategy set applies
+# (NYSE is sessioned, so ORB/gap-fade run too).
+US_WATCHLIST: list[str] = ["AAPL", "MSFT", "NVDA", "SPY", "QQQ"]
+
+
+# --- Per-market paper wallet seed (FRD M2/M6/M7) ---
+# IN uses WALLET / live_wallet_config() (settings-overridable). Non-IN markets
+# read the `wallets` table; migrate_multimarket seeds these (currency, initial,
+# goal) rows ON CONFLICT DO NOTHING so re-runs never clobber a live balance.
+MARKET_WALLET_SEED: dict[str, tuple[str, str, str]] = {
+    "CRYPTO": ("USD", "1000", "2000"),
+    "US": ("USD", "5000", "10000"),
+}
 
 
 # --- Competition tradable universe ---
@@ -79,6 +116,25 @@ class RiskLimits:
     daily_loss_kill_inr: Decimal = Decimal("1000") # kill switch trips here (paper)
     per_symbol_cooldown_min: int = 45              # re-entry cooldown, NOW ENFORCED in risk.evaluate (2026-06-08)
     max_signals_per_symbol_per_day: int = 3        # F4 fewer entries (was 5→2); rebalanced to 3 now cooldown also throttles
+
+
+# --- Per-market risk overrides (S2) ---
+# Risk limits are INR-shaped for the incumbent IN book. US/CRYPTO trade in USD,
+# so their per-trade notional cap + daily-loss kill must be venue-currency
+# values, not the ₹15k/₹1k IN defaults. Count-based limits (max_open_positions,
+# cooldown, signals/day) are currency-agnostic and stay shared. IN is
+# intentionally ABSENT → it keeps using live_risk_limits() (settings-overridable,
+# byte-identical). USD figures are placeholders pending operator calibration.
+@dataclass(frozen=True)
+class MarketRisk:
+    max_position: Decimal        # per-trade notional cap, venue currency
+    daily_loss_kill: Decimal     # daily realised-loss kill, venue currency
+
+
+MARKET_RISK: dict[str, "MarketRisk"] = {
+    "US":     MarketRisk(max_position=Decimal("1500"), daily_loss_kill=Decimal("100")),  # USD
+    "CRYPTO": MarketRisk(max_position=Decimal("300"),  daily_loss_kill=Decimal("50")),   # USD
+}
 
 
 # --- Dynamic position-sizing ladder ---
@@ -193,6 +249,16 @@ CLUSTER_ON_EMIT: bool = False
 # OFF the stage is a clean no-op (the release path is byte-identical to today).
 EVAL_GATE_ENABLED: bool = False
 EVAL_GATE_WINDOW_DAYS: int = 30   # look-back the gate re-prices
+# S4 trading-safety guard: when ON, paper_execute runs an independent pre-trade
+# backstop (helm.safety.pre_trade_check) on top of the risk gate. OFF by default
+# so the paper path is byte-identical; flip ON per the live-funding runbook.
+SAFETY_GUARD_ENABLED: bool = False
+# Hard notional ceiling = this multiple of the per-market per-trade cap (a
+# mis-config backstop independent of the risk cap).
+SAFETY_NOTIONAL_CEILING_MULT: Decimal = Decimal("1.5")
+# Circuit breaker: halt new trades for the day after this many consecutive
+# losing closes (the daily-loss arm is already enforced by risk.daily_loss_kill).
+SAFETY_MAX_CONSECUTIVE_LOSSES: int = 4
 # A cluster whose fix was escalated from a freestyle agent to the house surface
 # (G2) and that has recurred at least this many times with no in-surface owner
 # is surfaced to the human via the Action Center — the visible form of insight
@@ -304,6 +370,19 @@ def live_risk_limits() -> RiskLimits:
     )
 
 
+def live_risk_limits_for(market: str) -> RiskLimits:
+    """Risk limits for a market. IN — and any market without a MARKET_RISK entry —
+    uses live_risk_limits() unchanged (settings-overridable, byte-identical to the
+    single-market path). US/CRYPTO overlay their venue-currency per-trade cap +
+    daily-loss kill onto the shared count-based limits."""
+    base = live_risk_limits()
+    mr = MARKET_RISK.get(market)
+    if mr is None:
+        return base
+    return replace(base, max_position_inr=mr.max_position,
+                   daily_loss_kill_inr=mr.daily_loss_kill)
+
+
 def live_wallet_config() -> WalletConfig:
     """WALLET overlaid with any settings-table overrides (fail-safe to WALLET)."""
     try:
@@ -332,6 +411,7 @@ EDITABLE_FLAG_KEYS: tuple[str, ...] = (
     "HOUSE_STRATEGY_KEYED_SLOTS",
     "CLUSTER_ON_EMIT",
     "EVAL_GATE_ENABLED",
+    "SAFETY_GUARD_ENABLED",
 )
 EDITABLE_TUNABLE_KEYS: tuple[str, ...] = (
     "MIN_EDGE_TO_COST",
@@ -344,6 +424,7 @@ _FLAG_DEFAULTS: dict[str, bool] = {
     "HOUSE_STRATEGY_KEYED_SLOTS": HOUSE_STRATEGY_KEYED_SLOTS,
     "CLUSTER_ON_EMIT": CLUSTER_ON_EMIT,
     "EVAL_GATE_ENABLED": EVAL_GATE_ENABLED,
+    "SAFETY_GUARD_ENABLED": SAFETY_GUARD_ENABLED,
 }
 _TUNABLE_DEFAULTS: dict[str, Decimal] = {
     "MIN_EDGE_TO_COST": MIN_EDGE_TO_COST,
