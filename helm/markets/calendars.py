@@ -52,3 +52,88 @@ class NSECalendar:
 
     def trading_day_key(self, ts: datetime) -> date:
         return ts.astimezone(self.tz).date()
+
+
+class AlwaysOpen:
+    """24/7 venue (crypto): always open, no entry-window restriction, and NO EOD
+    square-off (a position is closed by stop/target/time-stop, never a flatten).
+    The 'today' boundary is the UTC date (daily-loss reset at 00:00 UTC)."""
+
+    tz = ZoneInfo("UTC")
+
+    def now(self) -> datetime:
+        return datetime.now(self.tz)
+
+    def is_market_open(self, now: datetime | None = None) -> bool:
+        return True
+
+    def is_trading_window(self, now: datetime | None = None) -> bool:
+        return True
+
+    def square_off_at(self) -> time | None:
+        return None
+
+    def trading_day_key(self, ts: datetime) -> date:
+        return ts.astimezone(self.tz).date()
+
+
+class NYSECalendar:
+    """US equities (NYSE/Nasdaq): ET regular session 09:30–16:00, with holiday +
+    half-day awareness via pandas_market_calendars when installed. If the dep is
+    missing it degrades to a weekday + fixed-hours gate (no holiday awareness)."""
+
+    tz = ZoneInfo("America/New_York")
+    OPEN = time(9, 30)
+    CLOSE = time(16, 0)
+    ENTRY_END = time(15, 45)   # mirror IN: no new entries near the bell
+    SQUARE_OFF = time(15, 55)
+
+    def __init__(self) -> None:
+        self._cal = None
+
+    def now(self) -> datetime:
+        return datetime.now(self.tz)
+
+    def _local(self, now: datetime | None) -> datetime:
+        return (now or self.now()).astimezone(self.tz)
+
+    def _session(self, n: datetime) -> tuple[time, time] | None:
+        """(open, close) ET for n's date, or None if the venue is closed that
+        day. Uses the XNYS schedule (holidays/half-days); falls back to a
+        weekday + fixed-hours gate if pandas_market_calendars is unavailable."""
+        try:
+            import pandas_market_calendars as mcal
+
+            if self._cal is None:
+                self._cal = mcal.get_calendar("XNYS")
+            d = n.date().isoformat()
+            sched = self._cal.schedule(start_date=d, end_date=d)
+            if sched.empty:
+                return None
+            o = sched.iloc[0]["market_open"].tz_convert(self.tz).time()
+            c = sched.iloc[0]["market_close"].tz_convert(self.tz).time()
+            return o, c
+        except Exception:
+            if n.weekday() >= 5:
+                return None
+            return self.OPEN, self.CLOSE
+
+    def is_market_open(self, now: datetime | None = None) -> bool:
+        n = self._local(now)
+        s = self._session(n)
+        return bool(s and s[0] <= n.time() <= s[1])
+
+    def is_trading_window(self, now: datetime | None = None) -> bool:
+        n = self._local(now)
+        s = self._session(n)
+        if not s:
+            return False
+        # Cap entries at min(ENTRY_END, close) so half-days don't allow late entries.
+        entry_end = min(self.ENTRY_END, s[1])
+        return s[0] <= n.time() <= entry_end
+
+    def square_off_at(self) -> time | None:
+        return self.SQUARE_OFF
+
+    def trading_day_key(self, ts: datetime) -> date:
+        return ts.astimezone(self.tz).date()

@@ -20,6 +20,11 @@ dependencies = [
     "numpy>=1.26",
     "yfinance>=0.2",          # LTP source (Kite market-data add-on missing)
 
+    # Multi-market (FRD M3): crypto data + US trading calendar. Used only by the
+    # US/CRYPTO adapters/calendars (disabled by default), imported lazily.
+    "ccxt>=4.4",                      # crypto spot market data (public endpoints)
+    "pandas-market-calendars>=4.4",   # NYSE holiday/half-day schedule
+
     # Dashboard + utilities
     "streamlit>=1.30",
     "structlog>=24.1",
