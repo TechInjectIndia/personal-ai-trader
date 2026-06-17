@@ -603,3 +603,11 @@ CREATE TABLE IF NOT EXISTS go_live_readiness (
 );
 CREATE INDEX IF NOT EXISTS go_live_readiness_recent
     ON go_live_readiness (market, evaluated_ts DESC);
+
+-- S5: per-market lessons. An instinct learned in one venue may not transfer to
+-- another, so the ledger gains a `market` dimension. NULL = market-agnostic
+-- (every legacy/IN instinct stays agnostic → behaviour unchanged); a set value
+-- scopes the lesson + its decay judgement to that market.
+ALTER TABLE agent_instincts ADD COLUMN IF NOT EXISTS market TEXT;
+CREATE INDEX IF NOT EXISTS instincts_by_agent_market
+    ON agent_instincts (competitor_id, market, status);
