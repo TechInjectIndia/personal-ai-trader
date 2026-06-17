@@ -5,7 +5,7 @@ Values are intentionally hardcoded in code (not a YAML file) — for a single-us
 bot, code is the config. Edit and PM2-reload to change.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import time
 from decimal import Decimal
 
@@ -116,6 +116,25 @@ class RiskLimits:
     daily_loss_kill_inr: Decimal = Decimal("1000") # kill switch trips here (paper)
     per_symbol_cooldown_min: int = 45              # re-entry cooldown, NOW ENFORCED in risk.evaluate (2026-06-08)
     max_signals_per_symbol_per_day: int = 3        # F4 fewer entries (was 5→2); rebalanced to 3 now cooldown also throttles
+
+
+# --- Per-market risk overrides (S2) ---
+# Risk limits are INR-shaped for the incumbent IN book. US/CRYPTO trade in USD,
+# so their per-trade notional cap + daily-loss kill must be venue-currency
+# values, not the ₹15k/₹1k IN defaults. Count-based limits (max_open_positions,
+# cooldown, signals/day) are currency-agnostic and stay shared. IN is
+# intentionally ABSENT → it keeps using live_risk_limits() (settings-overridable,
+# byte-identical). USD figures are placeholders pending operator calibration.
+@dataclass(frozen=True)
+class MarketRisk:
+    max_position: Decimal        # per-trade notional cap, venue currency
+    daily_loss_kill: Decimal     # daily realised-loss kill, venue currency
+
+
+MARKET_RISK: dict[str, "MarketRisk"] = {
+    "US":     MarketRisk(max_position=Decimal("1500"), daily_loss_kill=Decimal("100")),  # USD
+    "CRYPTO": MarketRisk(max_position=Decimal("300"),  daily_loss_kill=Decimal("50")),   # USD
+}
 
 
 # --- Dynamic position-sizing ladder ---
@@ -339,6 +358,19 @@ def live_risk_limits() -> RiskLimits:
         max_signals_per_symbol_per_day=_safe_int(
             overrides, "max_signals_per_symbol_per_day", RISK.max_signals_per_symbol_per_day),
     )
+
+
+def live_risk_limits_for(market: str) -> RiskLimits:
+    """Risk limits for a market. IN — and any market without a MARKET_RISK entry —
+    uses live_risk_limits() unchanged (settings-overridable, byte-identical to the
+    single-market path). US/CRYPTO overlay their venue-currency per-trade cap +
+    daily-loss kill onto the shared count-based limits."""
+    base = live_risk_limits()
+    mr = MARKET_RISK.get(market)
+    if mr is None:
+        return base
+    return replace(base, max_position_inr=mr.max_position,
+                   daily_loss_kill_inr=mr.daily_loss_kill)
 
 
 def live_wallet_config() -> WalletConfig:

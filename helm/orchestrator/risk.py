@@ -25,7 +25,7 @@ from helm.config import (
     MAX_OPEN_POSITIONS_PER_SYMBOL,
     dynamic_position_cap,
     live_flag,
-    live_risk_limits,
+    live_risk_limits_for,
 )
 from helm.data.store import conn
 from helm.wallet import WalletState, wallet_state
@@ -205,7 +205,7 @@ def evaluate(
     With competitor_id None + market 'IN' (every legacy row is 'IN'), the checks
     span the incumbent house pool exactly as before.
     """
-    limits = live_risk_limits()
+    limits = live_risk_limits_for(market)
 
     if kill_engaged_today(competitor_id, market):
         return False, "kill switch engaged for today"

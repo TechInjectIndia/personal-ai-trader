@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo
 from helm.config import (
     dynamic_position_cap,
     live_flag,
-    live_risk_limits,
+    live_risk_limits_for,
     live_tunable,
 )
 from helm.data.store import conn, first_candle_open_at_or_after, insert_audit
@@ -126,7 +126,7 @@ def execute_signal(
         # or many open positions), in which case it dominates.
         # risk.evaluate() rechecks both ceilings as a final guard.
         wallet = wallet_state(market_key)
-        base_cap = live_risk_limits().max_position_inr
+        base_cap = live_risk_limits_for(market_key).max_position_inr
         effective_cap = dynamic_position_cap(wallet.realised_net_pnl, base_cap)
         # F5 (flag-gated, default OFF): conviction-weighted sizing on the
         # auto-sized path. When enabled with a supplied confidence, scale the cap
