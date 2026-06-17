@@ -51,6 +51,11 @@ class VWAPReclaim(Strategy):
         if len(candles) < MIN_BARS:
             return None
 
+
+        if sum(1 for c in candles[-20:] if c['high'] == c['low']) >= 10:
+
+            return None  # filter: block-frozen-ticker
+
         vwaps = _anchored_vwap(candles)
 
         latest = candles[-1]

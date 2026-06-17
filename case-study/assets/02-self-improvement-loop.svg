@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 680" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" role="img" aria-label="Helm self-improvement loop: graded mistakes become shipped, verified code via three cooperating agents — Product Manager, Engineer, and Tester — with the human as the only push gate.">
+  <title>Helm — the self-improvement loop</title>
+  <desc>Closed trades are graded into improvement proposals; a PM agent triages them into typed tasks; an Engineer agent ships code through a closed mutator surface and commits to main; a Tester agent verifies on the live deployment and reverts on failure; the human reviews and pushes. The cycle repeats.</desc>
+  <style>
+    .box{fill:#ffffff;stroke:#cbd5e1;stroke-width:1.5;}
+    .llm{fill:#ede9fe;stroke:#7c3aed;stroke-width:1.5;}
+    .act{fill:#dcfce7;stroke:#16a34a;stroke-width:1.5;}
+    .human{fill:#fff7ed;stroke:#ea580c;stroke-width:1.5;}
+    .test{fill:#ecfeff;stroke:#0891b2;stroke-width:1.5;}
+    .t{fill:#0f172a;font-size:16px;font-weight:700;text-anchor:middle;}
+    .ts{fill:#475569;font-size:11.5px;text-anchor:middle;}
+    .lbl{fill:#475569;font-size:11.5px;text-anchor:middle;}
+    .arr{stroke:#94a3b8;stroke-width:2;fill:none;}
+    .title{fill:#0f172a;font-size:25px;font-weight:700;}
+    .sub{fill:#64748b;font-size:14px;}
+    .tag{fill:#7c3aed;font-size:12px;font-weight:700;letter-spacing:.5px;}
+    .pin{font-size:10.5px;font-weight:700;text-anchor:middle;}
+  </style>
+  <defs>
+    <marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 z" fill="#94a3b8"/></marker>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="680" fill="#ffffff"/>
+  <text x="40" y="48" class="tag">LAYER 2</text>
+  <text x="40" y="78" class="title">The self-improvement loop</text>
+  <text x="40" y="104" class="sub">Graded mistakes become shipped, verified code — the system edits and tests itself; the human is the only push gate</text>
+
+  <!-- ring arrows (clockwise) drawn first so nodes sit on top -->
+  <path class="arr" marker-end="url(#a)" d="M312,527 L222,400"/>
+  <path class="arr" marker-end="url(#a)" d="M220,320 L308,206"/>
+  <path class="arr" marker-end="url(#a)" d="M477,168 H723"/>
+  <path class="arr" marker-end="url(#a)" d="M915,205 L990,320"/>
+  <path class="arr" marker-end="url(#a)" d="M1012,400 L918,533"/>
+  <path class="arr" marker-end="url(#a)" d="M723,562 H477"/>
+
+  <!-- arrow labels -->
+  <text class="lbl" x="225" y="470">closed trades graded</text>
+  <text class="lbl" x="232" y="262">ranked recurrence×conf.</text>
+  <text class="lbl" x="600" y="156">typed task + spec</text>
+  <text class="lbl" x="985" y="252">commit on main</text>
+  <text class="lbl" x="1000" y="478">verified / reverted</text>
+  <text class="lbl" x="600" y="552">human reviews → pushes</text>
+
+  <!-- center invariants -->
+  <rect class="box" x="470" y="300" width="260" height="120" rx="14" fill="#f8fafc"/>
+  <text class="t" x="600" y="332" font-size="14">Invariants</text>
+  <text class="ts" x="600" y="356">main always green</text>
+  <text class="ts" x="600" y="374">Engineer never pushes</text>
+  <text class="ts" x="600" y="392">2 reverts → auto-pause</text>
+  <text class="ts" x="600" y="410">kill: autonomy_paused</text>
+
+  <!-- C2 Retros (left) -->
+  <rect class="box" x="55" y="323" width="190" height="74" rx="12"/>
+  <text class="t" x="150" y="352">Retros + proposals</text>
+  <text class="ts" x="150" y="372">plain-English grade</text>
+  <text class="ts" x="150" y="388">0–3 ideas / retro</text>
+
+  <!-- C3 PM (top-left) -->
+  <rect class="llm" x="285" y="128" width="190" height="74" rx="12"/>
+  <text class="pin" x="380" y="120" fill="#7c3aed">PRODUCT MANAGER · LLM</text>
+  <text class="t" x="380" y="157">Triage the queue</text>
+  <text class="ts" x="380" y="177">Mon 06:00 IST</text>
+  <text class="ts" x="380" y="193">cheap, reversible first</text>
+
+  <!-- C4 Engineer (top-right) -->
+  <rect class="llm" x="725" y="128" width="190" height="74" rx="12"/>
+  <text class="pin" x="820" y="120" fill="#7c3aed">ENGINEER · LLM</text>
+  <text class="t" x="820" y="157">Ship one change</text>
+  <text class="ts" x="820" y="177">6 typed mutators only</text>
+  <text class="ts" x="820" y="193">lint + tests hard gate</text>
+
+  <!-- C5 Tester (right) -->
+  <rect class="test" x="955" y="323" width="190" height="74" rx="12"/>
+  <text class="pin" x="1050" y="315" fill="#0891b2">TESTER · deterministic</text>
+  <text class="t" x="1050" y="352">Verify on live</text>
+  <text class="ts" x="1050" y="372">6-stage check</text>
+  <text class="ts" x="1050" y="388">revert on fail</text>
+
+  <!-- C6 Human (bottom-right) -->
+  <rect class="human" x="725" y="525" width="190" height="74" rx="12"/>
+  <text class="pin" x="820" y="517" fill="#ea580c">HUMAN GATE</text>
+  <text class="t" x="820" y="554">Review &amp; push</text>
+  <text class="ts" x="820" y="574">unpushed commits</text>
+  <text class="ts" x="820" y="590">surfaced on dashboard</text>
+
+  <!-- C1 Running loop (bottom-left) -->
+  <rect class="act" x="285" y="525" width="190" height="74" rx="12"/>
+  <text class="t" x="380" y="554">Running trading loop</text>
+  <text class="ts" x="380" y="574">Layer 1, live</text>
+  <text class="ts" x="380" y="590">produces new outcomes</text>
+</svg>

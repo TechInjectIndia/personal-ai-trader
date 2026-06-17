@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 680" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" role="img" aria-label="Helm multi-agent competition league: five different AI CLI backends each trade an isolated paper wallet through one shared, quota-gated, risk-gated execution path, ranked on a common leaderboard.">
+  <title>Helm — the multi-agent competition league</title>
+  <desc>Five AI backends (Claude, opencode, Gemini, Qwen, Codex) each run the identical shared invocation path: build a market snapshot, reserve per-backend quota, call the backend for freestyle OPEN/CLOSE/HOLD intents (logged to agent_invocations), pass a per-competitor risk gate, and route through the paper_execute chokepoint into an isolated 50,000-rupee wallet. A leaderboard ranks all of them on a common basis.</desc>
+  <style>
+    .box{fill:#ffffff;stroke:#cbd5e1;stroke-width:1.5;}
+    .llm{fill:#ede9fe;stroke:#7c3aed;stroke-width:1.5;}
+    .gate{fill:#fef3c7;stroke:#d97706;stroke-width:1.5;}
+    .act{fill:#dcfce7;stroke:#16a34a;stroke-width:1.5;}
+    .t{fill:#0f172a;font-size:14.5px;font-weight:700;text-anchor:middle;}
+    .tl{fill:#0f172a;font-size:14.5px;font-weight:700;text-anchor:start;}
+    .ts{fill:#475569;font-size:11px;text-anchor:middle;}
+    .tsl{fill:#475569;font-size:11px;text-anchor:start;}
+    .lbl{fill:#475569;font-size:11px;text-anchor:middle;}
+    .arr{stroke:#94a3b8;stroke-width:1.7;fill:none;}
+    .darr{stroke:#a78bfa;stroke-width:1.7;fill:none;stroke-dasharray:5 4;}
+    .title{fill:#0f172a;font-size:25px;font-weight:700;}
+    .sub{fill:#64748b;font-size:14px;}
+    .tag{fill:#7c3aed;font-size:12px;font-weight:700;letter-spacing:.5px;}
+  </style>
+  <defs>
+    <marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 z" fill="#94a3b8"/></marker>
+    <marker id="ap" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 z" fill="#a78bfa"/></marker>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="680" fill="#ffffff"/>
+  <text x="40" y="48" class="tag">LAYER 3</text>
+  <text x="40" y="78" class="title">The multi-agent competition league</text>
+  <text x="40" y="104" class="sub">Five different AI backends · one shared risk gate · isolated ₹50k wallets · equity AND reasoning compete</text>
+
+  <!-- 5 agents -->
+  <g>
+    <rect class="box" x="40" y="150" width="220" height="58" rx="10"/>
+    <circle cx="58" cy="179" r="5" fill="#16a34a"/><text class="tl" x="74" y="176">Claude</text><text class="tsl" x="74" y="192">incumbent · subscription</text>
+    <rect class="box" x="40" y="240" width="220" height="58" rx="10"/>
+    <circle cx="58" cy="269" r="5" fill="#16a34a"/><text class="tl" x="74" y="266">opencode</text><text class="tsl" x="74" y="282">free gateway model</text>
+    <rect class="box" x="40" y="330" width="220" height="58" rx="10"/>
+    <circle cx="58" cy="359" r="5" fill="#16a34a"/><text class="tl" x="74" y="356">Gemini</text><text class="tsl" x="74" y="372">free API key</text>
+    <rect class="box" x="40" y="420" width="220" height="58" rx="10" stroke-dasharray="5 4"/>
+    <circle cx="58" cy="449" r="5" fill="#d97706"/><text class="tl" x="74" y="446">Qwen</text><text class="tsl" x="74" y="462">needs one-time login</text>
+    <rect class="box" x="40" y="510" width="220" height="58" rx="10" stroke-dasharray="5 4"/>
+    <circle cx="58" cy="539" r="5" fill="#d97706"/><text class="tl" x="74" y="536">Codex</text><text class="tsl" x="74" y="552">needs one-time login</text>
+    <text class="tsl" x="40" y="138" fill="#7c3aed" font-weight="700" font-size="11">5 CLI BACKENDS</text>
+  </g>
+
+  <!-- shared path container -->
+  <rect class="box" x="360" y="160" width="300" height="410" rx="16" fill="#f8fafc"/>
+  <text class="t" x="510" y="186" font-size="13">Shared path — identical code for all 5</text>
+
+  <rect class="box" x="385" y="206" width="250" height="52" rx="9"/>
+  <text class="t" x="510" y="230">Market snapshot</text><text class="ts" x="510" y="246">universe candles + book + wallet</text>
+
+  <polygon class="gate" points="510,272 555,294 510,316 465,294"/>
+  <text class="t" x="510" y="291" font-size="12">Quota gate</text><text class="ts" x="510" y="307">per backend</text>
+
+  <rect class="llm" x="385" y="332" width="250" height="56" rx="9"/>
+  <text class="t" x="510" y="356">Backend call → OPEN/CLOSE/HOLD</text><text class="ts" x="510" y="374">logged to agent_invocations</text>
+
+  <polygon class="gate" points="510,402 555,424 510,446 465,424"/>
+  <text class="t" x="510" y="421" font-size="12">Risk gate</text><text class="ts" x="510" y="437">per-competitor</text>
+
+  <rect class="act" x="385" y="460" width="250" height="52" rx="9"/>
+  <text class="t" x="510" y="484">paper_execute chokepoint</text><text class="ts" x="510" y="500">stamps competitor_id</text>
+
+  <text class="ts" x="510" y="540">house-claude (Layer 1) competes here too</text>
+  <text class="ts" x="510" y="557">— ranked alongside the four freestyle agents</text>
+
+  <!-- internal vertical arrows -->
+  <path class="arr" marker-end="url(#a)" d="M510,258 V270"/>
+  <path class="arr" marker-end="url(#a)" d="M510,316 V330"/>
+  <path class="arr" marker-end="url(#a)" d="M510,388 V400"/>
+  <path class="arr" marker-end="url(#a)" d="M510,446 V458"/>
+
+  <!-- converging agent arrows -->
+  <path class="arr" marker-end="url(#a)" d="M260,179 C320,179 320,355 358,358"/>
+  <path class="arr" marker-end="url(#a)" d="M260,269 C320,269 325,356 358,359"/>
+  <path class="arr" marker-end="url(#a)" d="M260,359 H358"/>
+  <path class="arr" marker-end="url(#a)" d="M260,449 C320,449 325,363 358,360"/>
+  <path class="arr" marker-end="url(#a)" d="M260,539 C320,539 322,365 358,362"/>
+  <text class="lbl" x="310" y="338">every 5 min</text>
+
+  <!-- right side: wallets + leaderboard -->
+  <rect class="box" x="760" y="200" width="220" height="170" rx="12"/>
+  <text class="t" x="870" y="226">5 isolated wallets</text>
+  <text class="ts" x="870" y="244">₹50,000 each · fully separated</text>
+  <g font-size="11" fill="#166534" text-anchor="start">
+    <rect x="782" y="256" width="176" height="18" rx="4" fill="#dcfce7" stroke="#16a34a"/><text x="790" y="269">claude          ₹50,000</text>
+    <rect x="782" y="278" width="176" height="18" rx="4" fill="#dcfce7" stroke="#16a34a"/><text x="790" y="291">opencode     ₹50,000</text>
+    <rect x="782" y="300" width="176" height="18" rx="4" fill="#dcfce7" stroke="#16a34a"/><text x="790" y="313">gemini         ₹50,000</text>
+    <rect x="782" y="322" width="176" height="18" rx="4" fill="#dcfce7" stroke="#16a34a"/><text x="790" y="335">qwen           ₹50,000</text>
+    <rect x="782" y="344" width="176" height="18" rx="4" fill="#dcfce7" stroke="#16a34a"/><text x="790" y="357">codex          ₹50,000</text>
+  </g>
+
+  <rect class="box" x="760" y="410" width="220" height="160" rx="12" fill="#f8fafc"/>
+  <text class="t" x="870" y="438">Leaderboard</text>
+  <text class="ts" x="870" y="456">equity-ranked, common basis</text>
+  <g text-anchor="start" font-size="11" fill="#0f172a">
+    <text x="782" y="482">1 ·  ▆▆▆▆▆▆▆</text>
+    <text x="782" y="502">2 ·  ▆▆▆▆▆</text>
+    <text x="782" y="522">3 ·  ▆▆▆▆</text>
+  </g>
+  <text class="ts" x="870" y="548">+ "how it thinks" reasoning view</text>
+  <text class="ts" x="870" y="563">(raw prompt + response)</text>
+
+  <!-- right arrows -->
+  <path class="arr" marker-end="url(#a)" d="M635,486 C690,486 710,300 758,290"/>
+  <text class="lbl" x="700" y="404">isolated debit / credit</text>
+  <path class="arr" marker-end="url(#a)" d="M870,370 V408"/>
+  <path class="darr" marker-end="url(#ap)" d="M635,360 C690,360 700,470 758,478"/>
+  <text class="lbl" x="705" y="452" fill="#7c3aed">reasoning</text>
+</svg>
