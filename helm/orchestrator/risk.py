@@ -38,6 +38,22 @@ def _today_ist() -> date:
     return datetime.now(IST).date()
 
 
+def _market_tz(market: str) -> str:
+    """IANA tz name for a market's calendar (IN → 'Asia/Kolkata')."""
+    from helm.markets import get_market  # local: avoid import cycle on load
+
+    return get_market(market).calendar.tz.key
+
+
+def _market_today(market: str) -> date:
+    """Current trading-day boundary in the market's own timezone (so a US daily
+    kill resets at ET-midnight, crypto at UTC-midnight; IN stays IST)."""
+    from helm.markets import get_market
+
+    cal = get_market(market).calendar
+    return cal.trading_day_key(datetime.now(cal.tz))
+
+
 def _scope(competitor_id: str | None) -> tuple[str, tuple]:
     """Return a SQL fragment + params that scope a query to one book.
 
@@ -83,10 +99,10 @@ def todays_realized_pnl(competitor_id: str | None = None, market: str = "IN") ->
             SELECT COALESCE(SUM(pnl_inr), 0) AS total
             FROM paper_trades
             WHERE status = 'CLOSED' AND market = %s
-              AND exit_ts >= date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata'
+              AND exit_ts >= date_trunc('day', now() AT TIME ZONE %s) AT TIME ZONE %s
               {frag}
             """,
-            (market, *params),
+            (market, _market_tz(market), _market_tz(market), *params),
         ).fetchone()
     return Decimal(row["total"])
 
@@ -102,7 +118,7 @@ def kill_engaged_today(competitor_id: str | None = None, market: str = "IN") -> 
     with conn() as c:
         row = c.execute(
             "SELECT kill_engaged FROM daily_state WHERE trade_date = %s AND market = %s",
-            (_today_ist(), market),
+            (_market_today(market), market),
         ).fetchone()
     return bool(row and row["kill_engaged"])
 
@@ -141,10 +157,10 @@ def signals_for_symbol_today(symbol: str, competitor_id: str | None = None,
             SELECT COUNT(*) AS n
             FROM paper_trades
             WHERE symbol = %s AND market = %s
-              AND entry_ts >= date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata'
+              AND entry_ts >= date_trunc('day', now() AT TIME ZONE %s) AT TIME ZONE %s
               {frag}
             """,
-            (symbol, market, *params),
+            (symbol, market, _market_tz(market), _market_tz(market), *params),
         ).fetchone()
     return int(row["n"])
 

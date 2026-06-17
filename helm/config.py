@@ -59,6 +59,13 @@ CRYPTO_TAKER_BPS: Decimal = Decimal("0.0010")   # 0.10% Binance spot taker (per 
 CRYPTO_MAX_HOLD_MIN = 240                        # 24/7 time-stop (4h): the EOD-flat analog
 
 
+# --- US equities market (FRD M7) — paper only; enable via MARKET_ENABLED["US"] ---
+# Liquid US large caps + index ETFs (the US analog of the NIFTYBEES/BANKBEES
+# picks). Bare tickers (yfinance US / Alpaca; no .NS). Full strategy set applies
+# (NYSE is sessioned, so ORB/gap-fade run too).
+US_WATCHLIST: list[str] = ["AAPL", "MSFT", "NVDA", "SPY", "QQQ"]
+
+
 # --- Per-market paper wallet seed (FRD M2/M6/M7) ---
 # IN uses WALLET / live_wallet_config() (settings-overridable). Non-IN markets
 # read the `wallets` table; migrate_multimarket seeds these (currency, initial,

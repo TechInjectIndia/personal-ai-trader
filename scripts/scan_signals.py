@@ -92,7 +92,8 @@ def main() -> int:
                     continue
                 for symbol in market.watchlist:
                     candles = resample_candles(
-                        symbol, getattr(strat, "bar_minutes", 1), market=market.key)
+                        symbol, getattr(strat, "bar_minutes", 1),
+                        market=market.key, tz=market.calendar.tz.key)
                     if requires_ctx:
                         ctx = get_context(symbol)
                         strat.context = Decimal(str(ctx["score"])) if ctx else None

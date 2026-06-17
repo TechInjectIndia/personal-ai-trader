@@ -44,9 +44,9 @@ def _insert_bars(symbol: str, bars: list[dict]) -> None:
         for b in bars:
             c.execute(
                 """
-                INSERT INTO candles_1m (symbol, bar_ts, open, high, low, close, tick_count)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (symbol, bar_ts) DO UPDATE SET
+                INSERT INTO candles_1m (market, symbol, bar_ts, open, high, low, close, tick_count)
+                VALUES ('IN', %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (market, symbol, bar_ts) DO UPDATE SET
                     open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
                     close = EXCLUDED.close, tick_count = EXCLUDED.tick_count
                 """,

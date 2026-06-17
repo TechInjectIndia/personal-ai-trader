@@ -17,12 +17,13 @@ from helm.config import (
     CRYPTO_TAKER_BPS,
     CRYPTO_WATCHLIST,
     MARKET_ENABLED,
+    US_WATCHLIST,
     WATCHLIST,
 )
 from helm.markets.base import Market
-from helm.markets.calendars import AlwaysOpen, NSECalendar
-from helm.markets.costs import CryptoBpsCosts, ZerodhaCosts
-from helm.markets.data import CCXTData, YFinanceNS
+from helm.markets.calendars import AlwaysOpen, NSECalendar, NYSECalendar
+from helm.markets.costs import AlpacaEquityCosts, CryptoBpsCosts, ZerodhaCosts
+from helm.markets.data import CCXTData, YFinanceNS, YFinanceUS
 
 MARKET_IN = Market(
     key="IN",
@@ -47,10 +48,25 @@ MARKET_CRYPTO = Market(
     max_hold_min=CRYPTO_MAX_HOLD_MIN,
 )
 
-# All registered markets, keyed by Market.key. US is appended in M7; the dict is
-# the single place a new venue is introduced. Enablement is separate
-# (MARKET_ENABLED) so a venue can be registered but dark.
-_ALL: dict[str, Market] = {MARKET_IN.key: MARKET_IN, MARKET_CRYPTO.key: MARKET_CRYPTO}
+MARKET_US = Market(
+    key="US",
+    name="US Equities (NYSE/Nasdaq)",
+    data=YFinanceUS(),
+    calendar=NYSECalendar(),
+    costs=AlpacaEquityCosts(),
+    currency="USD",
+    fractional=False,
+    watchlist=tuple(US_WATCHLIST),
+)
+
+# All registered markets, keyed by Market.key. The dict is the single place a
+# new venue is introduced. Enablement is separate (MARKET_ENABLED) so a venue
+# can be registered but dark — IN is the only one enabled by default.
+_ALL: dict[str, Market] = {
+    MARKET_IN.key: MARKET_IN,
+    MARKET_CRYPTO.key: MARKET_CRYPTO,
+    MARKET_US.key: MARKET_US,
+}
 
 
 def _register(market: Market) -> None:

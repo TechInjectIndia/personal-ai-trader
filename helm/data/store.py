@@ -106,25 +106,28 @@ def latest_ticks(symbol: str, limit: int = 100) -> list[dict[str, Any]]:
         )
 
 
-def todays_candles(symbol: str, market: str = "IN") -> list[dict[str, Any]]:
-    """1-min candles for today (IST day), in chronological order."""
+def todays_candles(symbol: str, market: str = "IN",
+                   tz: str = "Asia/Kolkata") -> list[dict[str, Any]]:
+    """1-min candles for the current trading day (in market timezone `tz`),
+    chronological. tz defaults to IST so the IN path is byte-identical."""
     with conn() as c:
         return list(
             c.execute(
                 """
                 SELECT bar_ts, open, high, low, close, tick_count
                 FROM candles_1m
-                WHERE symbol = %s AND market = %s
-                  AND bar_ts >= date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata'
+                WHERE symbol = %(symbol)s AND market = %(market)s
+                  AND bar_ts >= date_trunc('day', now() AT TIME ZONE %(tz)s) AT TIME ZONE %(tz)s
                 ORDER BY bar_ts ASC
                 """,
-                (symbol, market),
+                {"symbol": symbol, "market": market, "tz": tz},
             )
         )
 
 
 def resample_candles(
-    symbol: str, minutes: int, lookback_bars: int = 0, market: str = "IN"
+    symbol: str, minutes: int, lookback_bars: int = 0, market: str = "IN",
+    tz: str = "Asia/Kolkata",
 ) -> list[dict[str, Any]]:
     """Aggregate today's `candles_1m` into `minutes`-minute OHLC bars.
 
@@ -143,18 +146,18 @@ def resample_candles(
     scale all of a session's N-min bars are cheap, so it is currently unused.
     """
     if minutes <= 1:
-        return todays_candles(symbol, market)
+        return todays_candles(symbol, market, tz)
     with conn() as c:
         return list(
             c.execute(
                 """
                 WITH anchor AS (
-                    SELECT (date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata')
+                    SELECT (date_trunc('day', now() AT TIME ZONE %(tz)s)
                             + interval '9 hours 15 minutes')
-                           AT TIME ZONE 'Asia/Kolkata' AS open_ts
+                           AT TIME ZONE %(tz)s AS open_ts
                 )
                 SELECT
-                    date_bin(make_interval(mins => %s), bar_ts,
+                    date_bin(make_interval(mins => %(minutes)s), bar_ts,
                              (SELECT open_ts FROM anchor))  AS bar_ts,
                     (array_agg(open  ORDER BY bar_ts ASC))[1]  AS open,
                     MAX(high)                                  AS high,
@@ -162,12 +165,12 @@ def resample_candles(
                     (array_agg(close ORDER BY bar_ts DESC))[1] AS close,
                     SUM(tick_count)                            AS tick_count
                 FROM candles_1m
-                WHERE symbol = %s AND market = %s
-                  AND bar_ts >= date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata'
+                WHERE symbol = %(symbol)s AND market = %(market)s
+                  AND bar_ts >= date_trunc('day', now() AT TIME ZONE %(tz)s) AT TIME ZONE %(tz)s
                 GROUP BY 1
                 ORDER BY bar_ts ASC
                 """,
-                (minutes, symbol, market),
+                {"minutes": minutes, "symbol": symbol, "market": market, "tz": tz},
             )
         )
 

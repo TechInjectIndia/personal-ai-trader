@@ -124,6 +124,15 @@ class YFinanceNS:
             return []
 
 
+class YFinanceUS(YFinanceNS):
+    """US equities via yfinance (bare ticker, no suffix). Zero-config free
+    default for the US market; Alpaca (AlpacaData) is the keyed alternative for
+    live + IEX bars. yfinance gives years of daily + ~60d of 1-min history."""
+
+    suffix = ""
+    source = "yfinance"
+
+
 class CCXTData:
     """Crypto spot via ccxt PUBLIC endpoints (no API key for market data).
     Default venue binance; bare symbols map SYM -> SYM/{quote} (default USDT).
