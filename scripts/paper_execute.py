@@ -26,6 +26,7 @@ from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 from helm.config import (
+    SAFETY_NOTIONAL_CEILING_MULT,
     dynamic_position_cap,
     live_flag,
     live_risk_limits_for,
@@ -152,6 +153,18 @@ def execute_signal(
             sized_qty = qty
 
         target = sig["target"]
+        # S4 trading-safety backstop (flag-gated; OFF → byte-identical). An
+        # INDEPENDENT pre-trade guard on top of risk.evaluate: hard notional
+        # ceiling, worst-case loss bound, and stop-side sanity. A trade must pass
+        # both this and the risk gate.
+        safety_ok, safety_reason = True, "ok"
+        if live_flag("SAFETY_GUARD_ENABLED") and sized_qty and sized_qty > 0:
+            from helm.safety import pre_trade_check
+            safety_ok, safety_reason = pre_trade_check(
+                sig["side"], sized_qty, entry, Decimal(sig["stop_loss"]), market_key,
+                hard_ceiling=SAFETY_NOTIONAL_CEILING_MULT * effective_cap,
+                max_loss=live_risk_limits_for(market_key).daily_loss_kill_inr,
+            )
         if conviction_block:
             allowed, reason = False, (
                 f"low_conviction (conf={conviction:.2f} < floor {conviction_floor})"
@@ -163,6 +176,8 @@ def execute_signal(
                 f"wallet has ₹{wallet.available} available, one share of "
                 f"{sig['symbol']} costs ₹{entry}"
             )
+        elif not safety_ok:
+            allowed, reason = False, f"safety_guard: {safety_reason}"
         elif target is not None and (
             e2c := _edge_to_cost(mkt.costs, sig["side"], sized_qty, entry, Decimal(target))
         ) < (min_e2c := live_tunable("MIN_EDGE_TO_COST")):

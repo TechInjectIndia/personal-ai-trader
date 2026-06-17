@@ -249,6 +249,13 @@ CLUSTER_ON_EMIT: bool = False
 # OFF the stage is a clean no-op (the release path is byte-identical to today).
 EVAL_GATE_ENABLED: bool = False
 EVAL_GATE_WINDOW_DAYS: int = 30   # look-back the gate re-prices
+# S4 trading-safety guard: when ON, paper_execute runs an independent pre-trade
+# backstop (helm.safety.pre_trade_check) on top of the risk gate. OFF by default
+# so the paper path is byte-identical; flip ON per the live-funding runbook.
+SAFETY_GUARD_ENABLED: bool = False
+# Hard notional ceiling = this multiple of the per-market per-trade cap (a
+# mis-config backstop independent of the risk cap).
+SAFETY_NOTIONAL_CEILING_MULT: Decimal = Decimal("1.5")
 # A cluster whose fix was escalated from a freestyle agent to the house surface
 # (G2) and that has recurred at least this many times with no in-surface owner
 # is surfaced to the human via the Action Center — the visible form of insight
@@ -401,6 +408,7 @@ EDITABLE_FLAG_KEYS: tuple[str, ...] = (
     "HOUSE_STRATEGY_KEYED_SLOTS",
     "CLUSTER_ON_EMIT",
     "EVAL_GATE_ENABLED",
+    "SAFETY_GUARD_ENABLED",
 )
 EDITABLE_TUNABLE_KEYS: tuple[str, ...] = (
     "MIN_EDGE_TO_COST",
@@ -413,6 +421,7 @@ _FLAG_DEFAULTS: dict[str, bool] = {
     "HOUSE_STRATEGY_KEYED_SLOTS": HOUSE_STRATEGY_KEYED_SLOTS,
     "CLUSTER_ON_EMIT": CLUSTER_ON_EMIT,
     "EVAL_GATE_ENABLED": EVAL_GATE_ENABLED,
+    "SAFETY_GUARD_ENABLED": SAFETY_GUARD_ENABLED,
 }
 _TUNABLE_DEFAULTS: dict[str, Decimal] = {
     "MIN_EDGE_TO_COST": MIN_EDGE_TO_COST,
