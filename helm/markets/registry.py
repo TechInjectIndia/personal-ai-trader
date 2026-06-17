@@ -70,7 +70,8 @@ _ALL: dict[str, Market] = {
 
 
 def _register(market: Market) -> None:
-    """Add a market to the registry (used by M3/M6/M7 to extend _ALL)."""
+    """Register a market at runtime (supported extension point; tests use it to
+    add a throwaway market without editing _ALL)."""
     _ALL[market.key] = market
 
 

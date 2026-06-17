@@ -35,7 +35,7 @@ def test_market_tz_per_venue():
 
 
 def test_market_today_in_is_ist_date():
-    # IN keeps the IST trading-day boundary (byte-identical to _today_ist).
+    # IN keeps the IST trading-day boundary (the prior single-market behaviour).
     assert _market_today("IN") == datetime.now(ZoneInfo("Asia/Kolkata")).date()
 
 

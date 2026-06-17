@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from zoneinfo import ZoneInfo
 
 from helm.config import (
     HOUSE_TRADE_FILTER,
@@ -30,12 +29,6 @@ from helm.config import (
 )
 from helm.data.store import conn
 from helm.wallet import WalletState, wallet_state
-
-IST = ZoneInfo("Asia/Kolkata")
-
-
-def _today_ist() -> date:
-    return datetime.now(IST).date()
 
 
 def _market_tz(market: str) -> str:

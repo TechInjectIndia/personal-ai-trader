@@ -151,7 +151,7 @@ def backtest(
             cost_model=market.costs,
         )
         if not outcome.closed:
-            outcome = _time_stop(outcome, sig.side, entry, qty, after, market.costs)
+            outcome = _time_stop(sig.side, entry, qty, after, market.costs)
         outcomes.append(outcome)
         busy_until = (i + 1) + outcome.bars_held
 
@@ -164,7 +164,7 @@ def backtest(
     )
 
 
-def _time_stop(unclosed: SimOutcome, side: str, entry: Decimal, qty: Decimal,
+def _time_stop(side: str, entry: Decimal, qty: Decimal,
                after: list[dict], cost_model) -> SimOutcome:
     """Force-close an unclosed 24/7 position at the window's last bar (the crypto
     max-hold time-stop), so it counts as a real exit instead of being dropped."""
