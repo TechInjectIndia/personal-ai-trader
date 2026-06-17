@@ -36,6 +36,11 @@ class Strategy(ABC):
     # every other strategy a pure function of candles only (no DB/HTTP).
     requires_context: bool = False
 
+    # M6: a strategy that depends on a session OPEN (opening range, gap-from-
+    # prior-close). scan_signals SKIPS these on 24/7 venues (crypto), where there
+    # is no session open to anchor to. Session-agnostic strategies leave it False.
+    session_required: bool = False
+
     @property
     @abstractmethod
     def name(self) -> str: ...

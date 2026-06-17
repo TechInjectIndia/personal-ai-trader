@@ -10,11 +10,19 @@ a flag flip; no cron edits.
 
 from __future__ import annotations
 
-from helm.config import MARKET_ENABLED, WATCHLIST
+from helm.config import (
+    CRYPTO_EXCHANGE,
+    CRYPTO_MAX_HOLD_MIN,
+    CRYPTO_QUOTE,
+    CRYPTO_TAKER_BPS,
+    CRYPTO_WATCHLIST,
+    MARKET_ENABLED,
+    WATCHLIST,
+)
 from helm.markets.base import Market
-from helm.markets.calendars import NSECalendar
-from helm.markets.costs import ZerodhaCosts
-from helm.markets.data import YFinanceNS
+from helm.markets.calendars import AlwaysOpen, NSECalendar
+from helm.markets.costs import CryptoBpsCosts, ZerodhaCosts
+from helm.markets.data import CCXTData, YFinanceNS
 
 MARKET_IN = Market(
     key="IN",
@@ -27,9 +35,22 @@ MARKET_IN = Market(
     watchlist=tuple(WATCHLIST),
 )
 
-# All registered markets, keyed by Market.key. US/CRYPTO are appended in
-# M3/M6/M7; the dict is the single place a new venue is introduced.
-_ALL: dict[str, Market] = {MARKET_IN.key: MARKET_IN}
+MARKET_CRYPTO = Market(
+    key="CRYPTO",
+    name="Crypto (spot)",
+    data=CCXTData(CRYPTO_EXCHANGE, CRYPTO_QUOTE),
+    calendar=AlwaysOpen(),
+    costs=CryptoBpsCosts(CRYPTO_TAKER_BPS),
+    currency="USD",
+    fractional=True,
+    watchlist=tuple(CRYPTO_WATCHLIST),
+    max_hold_min=CRYPTO_MAX_HOLD_MIN,
+)
+
+# All registered markets, keyed by Market.key. US is appended in M7; the dict is
+# the single place a new venue is introduced. Enablement is separate
+# (MARKET_ENABLED) so a venue can be registered but dark.
+_ALL: dict[str, Market] = {MARKET_IN.key: MARKET_IN, MARKET_CRYPTO.key: MARKET_CRYPTO}
 
 
 def _register(market: Market) -> None:

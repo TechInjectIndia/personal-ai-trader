@@ -69,8 +69,24 @@ def verify() -> list[str]:
     return problems
 
 
+def seed_wallets() -> None:
+    """Seed per-market wallet rows for non-IN markets (currency, initial, goal)
+    from config.MARKET_WALLET_SEED. ON CONFLICT DO NOTHING so a re-run never
+    clobbers a live balance. IN is intentionally absent (it uses live_wallet_config)."""
+    from helm.config import MARKET_WALLET_SEED
+
+    with conn() as c:
+        for market, (currency, initial, goal) in MARKET_WALLET_SEED.items():
+            c.execute(
+                "INSERT INTO wallets (market, currency, initial_capital, goal_capital) "
+                "VALUES (%s, %s, %s, %s) ON CONFLICT (market) DO NOTHING",
+                (market, currency, initial, goal),
+            )
+
+
 def main() -> int:
     init_schema()
+    seed_wallets()
     problems = verify()
     if problems:
         print("M2 migration verification FAILED:", file=sys.stderr)

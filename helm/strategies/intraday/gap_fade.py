@@ -54,6 +54,7 @@ def _yesterday_close(symbol: str) -> Decimal | None:
 
 class GapFade(Strategy):
     name = "gap_fade"
+    session_required = True   # gap-from-prior-close needs a session open
 
     def scan(self, symbol: str, candles: list[dict]) -> Signal | None:
         if len(candles) < 2:

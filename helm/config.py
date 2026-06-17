@@ -51,6 +51,24 @@ MARKET_ENABLED: dict[str, bool] = {
 }
 
 
+# --- Crypto market (FRD M6) — paper only; enable via MARKET_ENABLED["CRYPTO"] ---
+CRYPTO_WATCHLIST: list[str] = ["BTC", "ETH"]   # majors: best liquidity + free data
+CRYPTO_EXCHANGE = "binance"                     # ccxt public OHLCV venue
+CRYPTO_QUOTE = "USDT"                            # BTC -> BTC/USDT
+CRYPTO_TAKER_BPS: Decimal = Decimal("0.0010")   # 0.10% Binance spot taker (per leg)
+CRYPTO_MAX_HOLD_MIN = 240                        # 24/7 time-stop (4h): the EOD-flat analog
+
+
+# --- Per-market paper wallet seed (FRD M2/M6/M7) ---
+# IN uses WALLET / live_wallet_config() (settings-overridable). Non-IN markets
+# read the `wallets` table; migrate_multimarket seeds these (currency, initial,
+# goal) rows ON CONFLICT DO NOTHING so re-runs never clobber a live balance.
+MARKET_WALLET_SEED: dict[str, tuple[str, str, str]] = {
+    "CRYPTO": ("USD", "1000", "2000"),
+    "US": ("USD", "5000", "10000"),
+}
+
+
 # --- Competition tradable universe ---
 # The candidate symbol set that freestyle competitors pick their weekly mandate
 # from (≤ MAX_MANDATE_SYMBOLS each — see helm.competition.mandate). A curated
