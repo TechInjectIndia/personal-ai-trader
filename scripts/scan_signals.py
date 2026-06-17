@@ -36,16 +36,17 @@ from helm.markets import enabled_markets
 from helm.strategies import ACTIVE
 
 
-def _already_emitted_today(strategy: str, symbol: str, side: str, market: str) -> bool:
+def _already_emitted_today(strategy: str, symbol: str, side: str, market: str,
+                           tz: str = "Asia/Kolkata") -> bool:
     with conn() as c:
         row = c.execute(
             """
             SELECT 1 FROM signals
             WHERE strategy = %s AND symbol = %s AND side = %s AND market = %s
-              AND ts >= date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata'
+              AND ts >= date_trunc('day', now() AT TIME ZONE %s) AT TIME ZONE %s
             LIMIT 1
             """,
-            (strategy, symbol, side, market),
+            (strategy, symbol, side, market, tz, tz),
         ).fetchone()
         return row is not None
 
@@ -93,7 +94,8 @@ def main() -> int:
                 for symbol in market.watchlist:
                     candles = resample_candles(
                         symbol, getattr(strat, "bar_minutes", 1),
-                        market=market.key, tz=market.calendar.tz.key)
+                        market=market.key, tz=market.calendar.tz.key,
+                        anchor_minutes=market.calendar.resample_anchor_minutes())
                     if requires_ctx:
                         ctx = get_context(symbol)
                         strat.context = Decimal(str(ctx["score"])) if ctx else None
@@ -110,7 +112,8 @@ def main() -> int:
                         continue
 
                     if _already_emitted_today(signal.strategy, signal.symbol,
-                                              signal.side, market.key):
+                                              signal.side, market.key,
+                                              market.calendar.tz.key):
                         check["dedup_skip"] = True
                         checks.append(check)
                         skipped_dup += 1

@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from helm.config import HOUSE_TRADE_FILTER, live_wallet_config
-from helm.data.store import conn
+from helm.data.store import conn, insert_audit
 
 
 @dataclass(frozen=True)
@@ -57,6 +57,11 @@ def _market_wallet_config(market: str) -> tuple[Decimal, Decimal]:
             (market,),
         ).fetchone()
     if not row:
+        # A non-IN market with no wallet row means the migration/seed didn't run.
+        # (0,0) makes every trade size to 0 and get blocked (fail-safe), but AUDIT
+        # loudly so the operator sees the misconfig rather than trading on phantom
+        # capital. Enabling a market without seeding its wallet is the real bug.
+        insert_audit("wallet", "missing_wallet_row", {"market": market})
         return Decimal("0"), Decimal("0")
     goal = Decimal(row["goal_capital"]) if row["goal_capital"] is not None else Decimal("0")
     return Decimal(row["initial_capital"]), goal

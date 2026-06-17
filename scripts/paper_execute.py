@@ -26,6 +26,7 @@ from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 from helm.config import (
+    SAFETY_MAX_CONSECUTIVE_LOSSES,
     SAFETY_NOTIONAL_CEILING_MULT,
     dynamic_position_cap,
     live_flag,
@@ -159,12 +160,22 @@ def execute_signal(
         # both this and the risk gate.
         safety_ok, safety_reason = True, "ok"
         if live_flag("SAFETY_GUARD_ENABLED") and sized_qty and sized_qty > 0:
-            from helm.safety import pre_trade_check
+            from helm.safety import pre_trade_check, should_halt
+            _limits = live_risk_limits_for(market_key)
             safety_ok, safety_reason = pre_trade_check(
                 sig["side"], sized_qty, entry, Decimal(sig["stop_loss"]), market_key,
                 hard_ceiling=SAFETY_NOTIONAL_CEILING_MULT * effective_cap,
-                max_loss=live_risk_limits_for(market_key).daily_loss_kill_inr,
+                max_loss=_limits.daily_loss_kill_inr,
             )
+            # Circuit breaker: halt the day after a hard daily loss OR a
+            # consecutive-loss streak (the streak arm is new vs the risk gate).
+            if safety_ok and should_halt(
+                risk.todays_realized_pnl(None, market_key),
+                risk.consecutive_losses(None, market_key),
+                max_daily_loss=_limits.daily_loss_kill_inr,
+                max_consecutive=SAFETY_MAX_CONSECUTIVE_LOSSES,
+            ):
+                safety_ok, safety_reason = False, "circuit breaker tripped"
         if conviction_block:
             allowed, reason = False, (
                 f"low_conviction (conf={conviction:.2f} < floor {conviction_floor})"

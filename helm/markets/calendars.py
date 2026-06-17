@@ -50,6 +50,10 @@ class NSECalendar:
     def square_off_at(self) -> time | None:
         return SQUARE_OFF_AT
 
+    def resample_anchor_minutes(self) -> int:
+        # N-min bars anchor to the session open (09:15 IST → 555).
+        return MARKET_OPEN.hour * 60 + MARKET_OPEN.minute
+
     def trading_day_key(self, ts: datetime) -> date:
         return ts.astimezone(self.tz).date()
 
@@ -72,6 +76,9 @@ class AlwaysOpen:
 
     def square_off_at(self) -> time | None:
         return None
+
+    def resample_anchor_minutes(self) -> int:
+        return 0   # no session open; anchor N-min bars to UTC midnight
 
     def trading_day_key(self, ts: datetime) -> date:
         return ts.astimezone(self.tz).date()
@@ -134,6 +141,9 @@ class NYSECalendar:
 
     def square_off_at(self) -> time | None:
         return self.SQUARE_OFF
+
+    def resample_anchor_minutes(self) -> int:
+        return self.OPEN.hour * 60 + self.OPEN.minute   # 09:30 ET → 570
 
     def trading_day_key(self, ts: datetime) -> date:
         return ts.astimezone(self.tz).date()

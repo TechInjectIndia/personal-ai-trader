@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
@@ -35,6 +36,10 @@ def conn() -> Iterator[psycopg.Connection[dict[str, Any]]]:
     c = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
     search_path = os.environ.get("HELM_SEARCH_PATH")
     if search_path:
+        # SET search_path cannot use a bind param, so validate as a bare SQL
+        # identifier before interpolation (defense against env-var SQL injection).
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", search_path):
+            raise ValueError(f"invalid HELM_SEARCH_PATH: {search_path!r}")
         c.execute(f"SET search_path TO {search_path}")
     try:
         yield c
@@ -127,7 +132,7 @@ def todays_candles(symbol: str, market: str = "IN",
 
 def resample_candles(
     symbol: str, minutes: int, lookback_bars: int = 0, market: str = "IN",
-    tz: str = "Asia/Kolkata",
+    tz: str = "Asia/Kolkata", anchor_minutes: int = 555,
 ) -> list[dict[str, Any]]:
     """Aggregate today's `candles_1m` into `minutes`-minute OHLC bars.
 
@@ -153,7 +158,7 @@ def resample_candles(
                 """
                 WITH anchor AS (
                     SELECT (date_trunc('day', now() AT TIME ZONE %(tz)s)
-                            + interval '9 hours 15 minutes')
+                            + make_interval(mins => %(anchor)s))
                            AT TIME ZONE %(tz)s AS open_ts
                 )
                 SELECT
@@ -170,7 +175,8 @@ def resample_candles(
                 GROUP BY 1
                 ORDER BY bar_ts ASC
                 """,
-                {"minutes": minutes, "symbol": symbol, "market": market, "tz": tz},
+                {"minutes": minutes, "symbol": symbol, "market": market, "tz": tz,
+                 "anchor": anchor_minutes},
             )
         )
 

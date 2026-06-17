@@ -63,6 +63,7 @@ from helm.config import (
 from helm.context_client import get_context
 from helm.data.store import conn, insert_audit, todays_candles
 from helm.llm import LLMError, decide as llm_decide
+from helm.safety import sanitize_for_prompt
 from helm.orchestrator import risk
 from scripts.paper_execute import execute_signal, record_skip
 
@@ -216,7 +217,9 @@ def _build_user_prompt(sig: dict, candles: list[dict], snapshot: dict, history: 
             "entry_price": float(sig["entry_price"]),
             "stop_loss": float(sig["stop_loss"]),
             "target": float(sig["target"]) if sig["target"] is not None else None,
-            "rationale": sig["rationale"],
+            # Untrusted free text → defang prompt-injection before it enters the
+            # decider prompt. Identity on clean rationales (byte-identical).
+            "rationale": sanitize_for_prompt(sig["rationale"]),
             "payload": sig["payload"],
         },
         "recent_candles_1m": _summarize_candles(candles),
@@ -230,7 +233,8 @@ def _build_user_prompt(sig: dict, candles: list[dict], snapshot: dict, history: 
     if context is not None:
         payload["external_context"] = {
             "score": context["score"],
-            "rationale": context["rationale"],
+            # News-derived → highest-risk injection vector; always sanitize.
+            "rationale": sanitize_for_prompt(context["rationale"]),
         }
     return (
         "Decide whether to TAKE or SKIP this paper trade.\n\n"

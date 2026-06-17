@@ -48,7 +48,12 @@ def _close_trade(c, trade: dict, exit_price: Decimal, reason: str) -> None:
     side = trade["side"]
     pnl = (exit_price - entry) * qty if side == "BUY" else (entry - exit_price) * qty
     # Cost model is the trade's own market (IN → ZerodhaCosts, byte-identical).
-    mkt = get_market(trade.get("market") or "IN")
+    try:
+        mkt = get_market(trade.get("market") or "IN")
+    except KeyError:
+        insert_audit("manage_positions", "unknown_market_cost_fallback",
+                     {"trade_id": trade["id"], "market": trade.get("market")})
+        mkt = get_market("IN")
     breakdown = mkt.costs.round_trip_breakdown(side, qty, entry, exit_price)
     charges = breakdown.total
     net_pnl = pnl - charges
@@ -190,7 +195,14 @@ def main() -> int:
     managed: list[str] = []
 
     for mkey, trades in by_market.items():
-        market = get_market(mkey)
+        try:
+            market = get_market(mkey)
+        except KeyError:
+            # A rogue/stale market value must not abort managing OTHER markets'
+            # open positions (incl. live IN stops/targets). Skip + audit loudly.
+            insert_audit("manage_positions", "unknown_market",
+                         {"market": mkey, "open_trades": len(trades)})
+            continue
         now = datetime.now(market.calendar.tz)
         if not market.calendar.is_market_open(now):
             continue  # venue closed → no LTP, nothing to manage (silent no-op)

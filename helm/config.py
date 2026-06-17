@@ -256,6 +256,9 @@ SAFETY_GUARD_ENABLED: bool = False
 # Hard notional ceiling = this multiple of the per-market per-trade cap (a
 # mis-config backstop independent of the risk cap).
 SAFETY_NOTIONAL_CEILING_MULT: Decimal = Decimal("1.5")
+# Circuit breaker: halt new trades for the day after this many consecutive
+# losing closes (the daily-loss arm is already enforced by risk.daily_loss_kill).
+SAFETY_MAX_CONSECUTIVE_LOSSES: int = 4
 # A cluster whose fix was escalated from a freestyle agent to the house surface
 # (G2) and that has recurred at least this many times with no in-surface owner
 # is surfaced to the human via the Action Center — the visible form of insight

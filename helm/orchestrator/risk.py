@@ -189,6 +189,27 @@ def minutes_since_last_exit(symbol: str, competitor_id: str | None = None,
     return Decimal(str(row["mins"])) if row and row["mins"] is not None else None
 
 
+def consecutive_losses(competitor_id: str | None = None, market: str = "IN") -> int:
+    """Number of most-recent CLOSED trades for this book+market that were losers,
+    counting back until the first non-loss. Powers the S4 circuit breaker."""
+    frag, params = _scope(competitor_id)
+    with conn() as c:
+        rows = list(c.execute(
+            f"SELECT net_pnl_inr FROM paper_trades "
+            f"WHERE status = 'CLOSED' AND market = %s AND exit_ts IS NOT NULL{frag} "
+            f"ORDER BY exit_ts DESC LIMIT 50",
+            (market, *params),
+        ))
+    n = 0
+    for r in rows:
+        v = r["net_pnl_inr"]
+        if v is not None and Decimal(v) < 0:
+            n += 1
+        else:
+            break
+    return n
+
+
 def evaluate(
     symbol: str,
     side: str,

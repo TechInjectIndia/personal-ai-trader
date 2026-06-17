@@ -25,6 +25,7 @@ _TWO = Decimal("0.01")
 @dataclass(frozen=True)
 class ComboScore:
     market: str
+    currency: str                   # venue currency (INR/USD) — net/expectancy are in this
     competitor_id: str | None       # None / 'house-claude' = house book
     strategy: str | None
     n: int
@@ -62,6 +63,14 @@ def combo_scores(days: int = 30, min_trades: int = 1) -> list[ComboScore]:
             """,
             (days, min_trades),
         ))
+    from helm.markets import get_market
+
+    def _ccy(mkt: str) -> str:
+        try:
+            return get_market(mkt).currency
+        except KeyError:
+            return ""
+
     out: list[ComboScore] = []
     for r in rows:
         n = int(r["n"])
@@ -71,7 +80,8 @@ def combo_scores(days: int = 30, min_trades: int = 1) -> list[ComboScore]:
         win_pct = (Decimal(wins) / n * 100) if n else Decimal("0")
         cost_drag = (charges / abs(gross)) if gross != 0 else Decimal("0")
         out.append(ComboScore(
-            market=r["market"], competitor_id=r["competitor_id"], strategy=r["strategy"],
+            market=r["market"], currency=_ccy(r["market"]),
+            competitor_id=r["competitor_id"], strategy=r["strategy"],
             n=n, net=net.quantize(_TWO), expectancy=expectancy.quantize(_TWO),
             win_pct=win_pct.quantize(_TWO), cost_drag=cost_drag.quantize(_TWO),
             score=expectancy.quantize(_TWO),
@@ -84,8 +94,10 @@ def combo_scores(days: int = 30, min_trades: int = 1) -> list[ComboScore]:
 def fund_candidates(days: int = 30, min_trades: int = 30,
                     min_expectancy: Decimal = Decimal("0")) -> list[ComboScore]:
     """Combos that have *earned* consideration for real capital: enough trades
-    AND positive net expectancy. Mirrors the M8 paper-gate spirit at the
-    combination grain. The human still funds manually."""
+    AND positive net expectancy. The filter is SIGN-based (expectancy > 0), so it
+    is currency-agnostic — a USD and an INR combo are each judged against zero, not
+    against each other (cross-currency magnitude is NOT comparable; the `currency`
+    field disambiguates display). The human still funds manually, per market."""
     return [c for c in combo_scores(days, min_trades) if c.expectancy > min_expectancy]
 
 
