@@ -611,3 +611,24 @@ CREATE INDEX IF NOT EXISTS go_live_readiness_recent
 ALTER TABLE agent_instincts ADD COLUMN IF NOT EXISTS market TEXT;
 CREATE INDEX IF NOT EXISTS instincts_by_agent_market
     ON agent_instincts (competitor_id, market, status);
+
+
+-- ─── Autonomous experiment controller (#4) ───────────────────────────
+-- The agent OWNS the live experiment flags: for each 'watching' flag it runs an
+-- ON arm then an OFF arm (each ends at min_trades closed house trades OR max_days,
+-- whichever first), compares net expectancy, and LOCKS the winner — flipping the
+-- flag in `settings` itself, no human. Quick by design (trade-count gated + a
+-- few-day cap per arm). scripts/experiment_controller.py drives this on cron.
+CREATE TABLE IF NOT EXISTS flag_experiments (
+    flag             TEXT PRIMARY KEY,
+    status           TEXT NOT NULL DEFAULT 'watching'
+                       CHECK (status IN ('watching', 'locked_on', 'locked_off')),
+    phase            TEXT NOT NULL DEFAULT 'on' CHECK (phase IN ('on', 'off')),
+    phase_started_ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+    min_trades       INT NOT NULL DEFAULT 10,
+    max_days         INT NOT NULL DEFAULT 3,
+    on_n             INT,  on_net  NUMERIC(12, 2),
+    off_n            INT,  off_net NUMERIC(12, 2),
+    verdict          TEXT, decided_ts TIMESTAMPTZ, notes TEXT,
+    updated_ts       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
