@@ -46,8 +46,8 @@ EXCHANGE = "NSE"
 # Editing this + PM2 reload is the single switch that turns a venue on/off.
 MARKET_ENABLED: dict[str, bool] = {
     "IN": True,
-    "US": False,
-    "CRYPTO": False,
+    "US": True,
+    "CRYPTO": True,
 }
 
 

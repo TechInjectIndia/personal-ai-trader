@@ -63,6 +63,7 @@ from helm.config import (
 from helm.context_client import get_context
 from helm.data.store import conn, insert_audit, todays_candles
 from helm.llm import LLMError, decide as llm_decide
+from helm.markets import enabled_markets, get_market
 from helm.safety import sanitize_for_prompt
 from helm.orchestrator import risk
 from scripts.paper_execute import execute_signal, record_skip
@@ -137,11 +138,17 @@ OUTPUT FORMAT — strict JSON, no other text, no markdown fences:
 """
 
 
-def _within_window(now: datetime) -> bool:
-    if now.weekday() >= 5:
-        return False
-    # Allow decisions slightly past TRADING_END to clear backlog.
-    return TRADING_START <= now.time() <= TRADING_END
+def _within_window(now: datetime, market_key: str = "IN") -> bool:
+    """Whether `market_key` is currently accepting new entries. IN keeps the
+    incumbent IST gate verbatim (byte-identical); every other market defers to
+    its own calendar's trading window. `now` is IST-aware — the non-IN calendars
+    convert internally, so passing it through is correct."""
+    if market_key == "IN":
+        if now.weekday() >= 5:
+            return False
+        # Allow decisions slightly past TRADING_END to clear backlog.
+        return TRADING_START <= now.time() <= TRADING_END
+    return get_market(market_key).calendar.is_trading_window(now)
 
 
 def _summarize_candles(candles: list[dict], n: int = DECIDER_RECENT_BARS) -> list[dict]:
@@ -359,10 +366,13 @@ def main() -> int:
         print("[decide] LLM_MODE=api but ANTHROPIC_API_KEY missing in .env", file=sys.stderr)
         return 2
 
-    if not args.force_window and not _within_window(now):
+    open_markets = [m.key for m in enabled_markets() if _within_window(now, m.key)]
+    if not args.force_window and not open_markets:
         return 0
-    if not _within_window(now):
-        _say("outside trading window — proceeding anyway because --force-window")
+    if not open_markets:
+        _say("no market in its trading window — proceeding anyway because --force-window")
+    else:
+        _say(f"markets in window: {','.join(open_markets)}")
 
     pending = _fetch_unconsumed(args.signal_id)
     _say(f"fetched {len(pending)} unconsumed signal(s) from today")
@@ -376,6 +386,13 @@ def main() -> int:
 
     taken = skipped = errored = stale = 0
     for sig in pending:
+        # Per-signal window gate: a signal is only decided while ITS OWN market
+        # is in window. Critical for IN byte-identical behaviour — when crypto
+        # keeps the run alive off-hours, a leftover IN signal must still NOT be
+        # decided outside IN hours (it stays unconsumed → staleness SKIPs it).
+        mkey = sig.get("market") or "IN"
+        if not args.force_window and not _within_window(now, mkey):
+            continue
         # Per-signal guard: one signal's unexpected error must not abort the
         # whole catch-up run (the next ones still get decided this tick).
         try:

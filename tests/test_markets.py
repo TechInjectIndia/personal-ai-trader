@@ -76,8 +76,14 @@ def test_zerodha_costs_delegate_to_charges():
         )
 
 
-def test_registry_defaults_to_in_only():
-    assert [m.key for m in enabled_markets()] == ["IN"]
+def test_enabled_markets_reflect_config_flags():
+    # All three venues are now live (paper) — IN, US, CRYPTO. enabled_markets()
+    # mirrors MARKET_ENABLED, with IN always present and first (registration order).
+    from helm.config import MARKET_ENABLED
+
+    keys = [m.key for m in enabled_markets()]
+    assert keys[0] == "IN"
+    assert set(keys) == {k for k, on in MARKET_ENABLED.items() if on}
     assert get_market("IN") is MARKET_IN
     assert "IN" in all_markets()
 
