@@ -66,6 +66,19 @@ CRYPTO_MAX_HOLD_MIN = 240                        # 24/7 time-stop (4h): the EOD-
 US_WATCHLIST: list[str] = ["AAPL", "MSFT", "NVDA", "SPY", "QQQ"]
 
 
+# --- Per-market data provider (M-OpenBB) ---
+# Which DataAdapter feeds each market. Defaults keep the live path byte-identical
+# (IN/US → yfinance, CRYPTO → ccxt); set a value to "openbb" to route that market
+# through the optional OpenBB Platform adapter (helm.markets.data.OpenBBData),
+# which only resolves once `openbb` is pip-installed (it's an optional extra). The
+# registry reads this; an unknown/missing key keeps the market's built-in default.
+MARKET_DATA_PROVIDER: dict[str, str] = {
+    "IN": "yfinance",
+    "US": "yfinance",
+    "CRYPTO": "ccxt",
+}
+
+
 # --- Per-market paper wallet seed (FRD M2/M6/M7) ---
 # IN uses WALLET / live_wallet_config() (settings-overridable). Non-IN markets
 # read the `wallets` table; migrate_multimarket seeds these (currency, initial,

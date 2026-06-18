@@ -260,3 +260,72 @@ class AlpacaData:
             return out
         except Exception:
             return []
+
+
+def _openbb_interval(bar_minutes: int) -> str:
+    if bar_minutes >= 1440:
+        return "1d"
+    if bar_minutes % 60 == 0 and bar_minutes >= 60:
+        return f"{bar_minutes // 60}h"
+    return f"{bar_minutes}m"
+
+
+def _obb_to_candles(df) -> list[dict]:
+    """OpenBB `.to_dataframe()` → candle dicts. OpenBB uses lowercase columns and
+    a date index (or a 'date' column); handle both, fail-soft."""
+    if df is None or len(df) == 0:
+        return []
+    if "date" in list(getattr(df, "columns", [])):
+        df = df.set_index("date")
+    out: list[dict] = []
+    for i in range(len(df)):
+        row, ts = df.iloc[i], df.index[i]
+        ts = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+        if getattr(ts, "tzinfo", None) is None:
+            ts = ts.replace(tzinfo=UTC)
+        get = lambda name: (row[name] if name in row else None)  # noqa: E731
+        out.append(_candle(ts, get("open"), get("high"), get("low"),
+                           get("close"), get("volume")))
+    return out
+
+
+class OpenBBData:
+    """Optional richer data via the OpenBB Platform (~100 providers behind one
+    API; free no-key providers: Yahoo / CBOE / yfinance; NSE via the .NS suffix).
+    Used ONLY when a market is routed to it via config.MARKET_DATA_PROVIDER. Lazy-
+    imported + fail-soft so the core never depends on `openbb` (AGPLv3 → kept an
+    optional extra). Validate live once `pip install openbb` is present; inert by
+    default (default config routes IN/US→yfinance, CRYPTO→ccxt)."""
+
+    source = "openbb"
+
+    def __init__(self, asset: str = "equity", suffix: str = "", provider: str | None = None):
+        self.asset = asset
+        self.suffix = suffix
+        self.provider = provider
+
+    def _ns(self):
+        from openbb import obb
+        return obb.crypto if self.asset == "crypto" else obb.equity
+
+    def historical(
+        self, symbol: str, bar_minutes: int, start: datetime, end: datetime
+    ) -> list[dict]:
+        try:
+            df = self._ns().price.historical(
+                f"{symbol}{self.suffix}", interval=_openbb_interval(bar_minutes),
+                start_date=start.date().isoformat(), end_date=end.date().isoformat(),
+                provider=self.provider,
+            ).to_dataframe()
+            return _obb_to_candles(df)
+        except Exception:
+            return []
+
+    def last_price(self, symbol: str) -> Decimal | None:
+        from datetime import timedelta
+        try:
+            end = datetime.now(UTC)
+            bars = self.historical(symbol, 1440, end - timedelta(days=5), end)
+            return bars[-1]["close"] if bars else None
+        except Exception:
+            return None

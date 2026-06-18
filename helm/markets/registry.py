@@ -16,6 +16,7 @@ from helm.config import (
     CRYPTO_QUOTE,
     CRYPTO_TAKER_BPS,
     CRYPTO_WATCHLIST,
+    MARKET_DATA_PROVIDER,
     MARKET_ENABLED,
     US_WATCHLIST,
     WATCHLIST,
@@ -23,12 +24,22 @@ from helm.config import (
 from helm.markets.base import Market
 from helm.markets.calendars import AlwaysOpen, NSECalendar, NYSECalendar
 from helm.markets.costs import AlpacaEquityCosts, CryptoBpsCosts, ZerodhaCosts
-from helm.markets.data import CCXTData, YFinanceNS, YFinanceUS
+from helm.markets.data import CCXTData, OpenBBData, YFinanceNS, YFinanceUS
+
+
+def _resolve_data(key: str, default, *, asset: str, suffix: str):
+    """The DataAdapter for `key`: the optional OpenBBData when config routes this
+    market to "openbb", else the market's built-in `default`. Defaults keep IN/US/
+    CRYPTO on yfinance/ccxt, so the live path is byte-identical unless reconfigured."""
+    if MARKET_DATA_PROVIDER.get(key) == "openbb":
+        return OpenBBData(asset=asset, suffix=suffix)
+    return default
+
 
 MARKET_IN = Market(
     key="IN",
     name="NSE Equities (India)",
-    data=YFinanceNS(),
+    data=_resolve_data("IN", YFinanceNS(), asset="equity", suffix=".NS"),
     calendar=NSECalendar(),
     costs=ZerodhaCosts(),
     currency="INR",
@@ -39,7 +50,8 @@ MARKET_IN = Market(
 MARKET_CRYPTO = Market(
     key="CRYPTO",
     name="Crypto (spot)",
-    data=CCXTData(CRYPTO_EXCHANGE, CRYPTO_QUOTE),
+    data=_resolve_data("CRYPTO", CCXTData(CRYPTO_EXCHANGE, CRYPTO_QUOTE),
+                       asset="crypto", suffix=""),
     calendar=AlwaysOpen(),
     costs=CryptoBpsCosts(CRYPTO_TAKER_BPS),
     currency="USD",
@@ -51,7 +63,7 @@ MARKET_CRYPTO = Market(
 MARKET_US = Market(
     key="US",
     name="US Equities (NYSE/Nasdaq)",
-    data=YFinanceUS(),
+    data=_resolve_data("US", YFinanceUS(), asset="equity", suffix=""),
     calendar=NYSECalendar(),
     costs=AlpacaEquityCosts(),
     currency="USD",

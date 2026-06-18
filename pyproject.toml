@@ -42,6 +42,12 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+# Optional richer data via the OpenBB Platform (~100 providers behind one API).
+# Heavy + AGPLv3, so kept out of core deps — install with `pip install -e .[openbb]`
+# only when routing a market to the OpenBBData adapter (config.MARKET_DATA_PROVIDER).
+openbb = [
+    "openbb>=4.3",
+]
 
 [project.scripts]
 helm = "helm.orchestrator.cli:main"
