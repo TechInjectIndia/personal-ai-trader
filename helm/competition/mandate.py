@@ -30,7 +30,11 @@ from zoneinfo import ZoneInfo
 from helm.analytics.economics import book_economics
 from helm.competition.backend import call_backend
 from helm.competition.competitors import Competitor
-from helm.config import TRADABLE_UNIVERSE, WATCHLIST
+from helm.config import (
+    market_default_watchlist,
+    market_framing,
+    market_tradable_universe,
+)
 from helm.data.store import conn, insert_audit
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -52,8 +56,7 @@ MANDATE_SCHEMA: dict[str, Any] = {
 
 SYSTEM_PROMPT_TEMPLATE = """You are an autonomous intraday trader entering a new \
 trading week in a live paper-trading league against other AI agents. You trade \
-NSE equities and ETFs intraday (MIS, square off same day) from your own isolated \
-cash wallet.
+{venue_clause} from your own isolated cash wallet.
 
 YOUR PERSONA / EDGE:
 {persona}
@@ -113,13 +116,15 @@ def _economics_advisory(competitor_id: str) -> tuple[dict, str]:
     return econ.as_dict(), advisory
 
 
-def _build_user_prompt(competitor: Competitor, wk_start: date | None = None) -> str:
+def _build_user_prompt(competitor: Competitor, wk_start: date | None = None,
+                       market: str = "IN") -> str:
     econ, advisory = _economics_advisory(competitor.id)
     snapshot = {
         "now_ist": datetime.now(IST).strftime("%Y-%m-%d %H:%M"),
         "week_start": (wk_start or current_week_start()).isoformat(),
         "max_symbols": MAX_MANDATE_SYMBOLS,
-        "candidate_universe": list(TRADABLE_UNIVERSE),
+        "market": market,
+        "candidate_universe": list(market_tradable_universe(market)),
         "your_recent_economics_last_30": econ,
     }
     return (
@@ -131,14 +136,14 @@ def _build_user_prompt(competitor: Competitor, wk_start: date | None = None) -> 
     )
 
 
-def _clean_universe(raw_universe: Any) -> list[str]:
-    """Validate a backend's picks against TRADABLE_UNIVERSE.
+def _clean_universe(raw_universe: Any, market: str = "IN") -> list[str]:
+    """Validate a backend's picks against `market`'s candidate universe.
 
     Upper-cases, drops anything outside the candidate set, de-duplicates while
     preserving order, and caps at MAX_MANDATE_SYMBOLS. Returns [] if nothing
-    valid survives (callers fall back to a WATCHLIST slice).
+    valid survives (callers fall back to that market's watchlist slice).
     """
-    tradable = set(TRADABLE_UNIVERSE)
+    tradable = set(market_tradable_universe(market))
     cleaned: list[str] = []
     if isinstance(raw_universe, list):
         for item in raw_universe:
@@ -151,7 +156,8 @@ def _clean_universe(raw_universe: Any) -> list[str]:
 
 
 def generate_mandate(competitor: Competitor,
-                     wk_start: date | None = None) -> dict[str, Any]:
+                     wk_start: date | None = None,
+                     market: str = "IN") -> dict[str, Any]:
     """Ask the competitor's backend for its weekly mandate.
 
     `wk_start` only frames the prompt's week context (defaults to the current
@@ -168,9 +174,10 @@ def generate_mandate(competitor: Competitor,
     """
     persona = competitor.persona or "Balanced discretionary intraday trader."
     system = SYSTEM_PROMPT_TEMPLATE.format(
-        persona=persona, max_symbols=MAX_MANDATE_SYMBOLS
+        persona=persona, max_symbols=MAX_MANDATE_SYMBOLS,
+        venue_clause=market_framing(market)["venue_clause"],
     )
-    user = _build_user_prompt(competitor, wk_start)
+    user = _build_user_prompt(competitor, wk_start, market)
 
     call = call_backend(
         competitor_id=competitor.id, backend=competitor.backend,
@@ -186,10 +193,10 @@ def generate_mandate(competitor: Competitor,
                      {"competitor_id": competitor.id, "backend": competitor.backend,
                       "error": (call.error or "")[:500]})
 
-    universe = _clean_universe(raw.get("universe"))
+    universe = _clean_universe(raw.get("universe"), market)
     fellback = not universe
     if fellback:
-        universe = list(WATCHLIST[:FALLBACK_UNIVERSE_SIZE])
+        universe = list(market_default_watchlist(market)[:FALLBACK_UNIVERSE_SIZE])
 
     strategy_config = raw.get("strategy_config")
     if not isinstance(strategy_config, dict):
@@ -237,23 +244,25 @@ def persist_mandate(
         )
 
 
-def current_mandate(competitor_id: str, wk_start: date | None = None) -> dict | None:
-    """This week's mandate row for a competitor, or None."""
+def current_mandate(competitor_id: str, wk_start: date | None = None,
+                    market: str = "IN") -> dict | None:
+    """This week's mandate row for a competitor in `market`, or None."""
     wk = wk_start or current_week_start()
     with conn() as c:
         return c.execute(
             """
-            SELECT competitor_id, week_start, universe, strategy_config,
+            SELECT competitor_id, market, week_start, universe, strategy_config,
                    rationale, created_at
             FROM competitor_mandates
-            WHERE competitor_id = %s AND week_start = %s
+            WHERE competitor_id = %s AND market = %s AND week_start = %s
             """,
-            (competitor_id, wk),
+            (competitor_id, market, wk),
         ).fetchone()
 
 
 def ensure_mandate(
     competitor: Competitor, *, force: bool = False, wk_start: date | None = None,
+    market: str = "IN",
 ) -> dict[str, Any]:
     """Return this week's mandate, generating + persisting one if absent.
 
@@ -268,10 +277,11 @@ def ensure_mandate(
     """
     wk = wk_start or current_week_start()
     if not force:
-        existing = current_mandate(competitor.id, wk)
+        existing = current_mandate(competitor.id, wk, market)
         if existing:
             return {
                 "competitor_id": competitor.id,
+                "market": market,
                 "week_start": wk.isoformat(),
                 "universe": list(existing["universe"] or []),
                 "rationale": existing["rationale"] or "",
@@ -280,10 +290,11 @@ def ensure_mandate(
                 "paused": False,
             }
 
-    plan = generate_mandate(competitor, wk_start=wk)
+    plan = generate_mandate(competitor, wk_start=wk, market=market)
     if plan["paused"]:
         return {
             "competitor_id": competitor.id,
+            "market": market,
             "week_start": wk.isoformat(),
             "universe": [],
             "rationale": "",
@@ -294,16 +305,17 @@ def ensure_mandate(
 
     persist_mandate(
         competitor.id, plan["universe"], plan["strategy_config"],
-        plan["rationale"], plan["raw"], wk_start=wk,
+        plan["rationale"], plan["raw"], wk_start=wk, market=market,
     )
     insert_audit(
         "competition_mandate", "planned",
         {"competitor_id": competitor.id, "backend": competitor.backend,
-         "week_start": wk.isoformat(), "universe": plan["universe"],
+         "market": market, "week_start": wk.isoformat(), "universe": plan["universe"],
          "fellback": plan["fellback"], "forced": force},
     )
     return {
         "competitor_id": competitor.id,
+        "market": market,
         "week_start": wk.isoformat(),
         "universe": plan["universe"],
         "rationale": plan["rationale"],
@@ -313,8 +325,8 @@ def ensure_mandate(
     }
 
 
-def mandate_symbols(wk_start: date | None = None) -> set[str]:
-    """Union of every ACTIVE competitor's current-week mandated symbols.
+def mandate_symbols(wk_start: date | None = None, market: str = "IN") -> set[str]:
+    """Union of every ACTIVE competitor's current-week mandated symbols in `market`.
 
     Scoped to active competitors so paused/retired agents don't keep their
     symbols in the poller's workload.
@@ -327,9 +339,9 @@ def mandate_symbols(wk_start: date | None = None) -> set[str]:
             SELECT m.universe
             FROM competitor_mandates m
             JOIN competitors comp ON comp.id = m.competitor_id
-            WHERE m.week_start = %s AND comp.status = 'active'
+            WHERE m.week_start = %s AND m.market = %s AND comp.status = 'active'
             """,
-            (wk,),
+            (wk, market),
         ).fetchall()
     for r in rows:
         for s in (r["universe"] or []):
@@ -339,12 +351,12 @@ def mandate_symbols(wk_start: date | None = None) -> set[str]:
     return syms
 
 
-def extra_polling_symbols(wk_start: date | None = None) -> list[str]:
-    """Mandated symbols that the house poller (WATCHLIST) does NOT already cover.
+def extra_polling_symbols(wk_start: date | None = None, market: str = "IN") -> list[str]:
+    """Mandated symbols in `market` that the house poller does NOT already cover.
 
-    This is exactly what scripts/poll_competition.py needs to poll — polling the
-    house WATCHLIST again is left to poll_market.py, so there's no double work
-    and the incumbent poller is untouched.
+    This is exactly what scripts/poll_competition.py needs to poll per market —
+    polling each market's house watchlist is left to poll_market.py, so there's
+    no double work and the incumbent IN poller is untouched.
     """
-    house = set(WATCHLIST)
-    return sorted(s for s in mandate_symbols(wk_start) if s not in house)
+    house = set(market_default_watchlist(market))
+    return sorted(s for s in mandate_symbols(wk_start, market) if s not in house)

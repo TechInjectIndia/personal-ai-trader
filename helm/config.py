@@ -132,6 +132,26 @@ def market_default_watchlist(market: str = "IN") -> list[str]:
     }.get(market, WATCHLIST)
 
 
+_MARKET_FRAMING: dict[str, dict[str, str]] = {
+    # `venue_clause` slots into the competition agent prompts ("You trade
+    # {venue_clause} ..."); IN keeps its incumbent wording so the IN league's
+    # framing is unchanged. currency/symbol drive the wallet figures shown.
+    "IN": {"venue_clause": "NSE equities and ETFs intraday (MIS, square off same day)",
+           "currency": "INR", "currency_symbol": "₹"},
+    "US": {"venue_clause": "US equities (NYSE/Nasdaq) intraday, flat by the close",
+           "currency": "USD", "currency_symbol": "$"},
+    "CRYPTO": {"venue_clause": "crypto spot pairs, traded 24/7 (no forced square-off; "
+               "positions time-stop instead)",
+               "currency": "USD", "currency_symbol": "$"},
+}
+
+
+def market_framing(market: str = "IN") -> dict[str, str]:
+    """Venue clause + currency for a market, used to frame competition agent
+    prompts and wallet displays per market."""
+    return _MARKET_FRAMING.get(market, _MARKET_FRAMING["IN"])
+
+
 # --- Trading hours (IST) ---
 # We deliberately skip the first 15 minutes (volatility / spread blowouts) and
 # square off well before the 15:25 IST regulatory auto-square-off for MIS.
