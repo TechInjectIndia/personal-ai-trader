@@ -43,15 +43,20 @@ from helm.competition.runner import (
 )
 from helm.config import TRADING_END, TRADING_START
 from helm.data.store import insert_audit
+from helm.markets import enabled_markets, get_market
 
 IST = ZoneInfo("Asia/Kolkata")
 ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 
 
-def _within_window(now: datetime) -> bool:
-    if now.weekday() >= 5:
-        return False
-    return TRADING_START <= now.time() <= TRADING_END
+def _within_window(now: datetime, market: str = "IN") -> bool:
+    """Whether `market` is accepting new competitor entries now. IN keeps the
+    incumbent IST gate (byte-identical); other markets defer to their calendar."""
+    if market == "IN":
+        if now.weekday() >= 5:
+            return False
+        return TRADING_START <= now.time() <= TRADING_END
+    return get_market(market).calendar.is_trading_window(now)
 
 
 def _select(competitor_id: str | None) -> list[Competitor]:
@@ -81,6 +86,8 @@ def main() -> int:
                    help="call the backend and decide, but do not book trades")
     p.add_argument("--force-window", action="store_true",
                    help="bypass the trading-window check (manual runs)")
+    p.add_argument("--market", default=None,
+                   help="run just one market (IN/US/CRYPTO); default = all enabled")
     args = p.parse_args()
 
     load_dotenv(ENV_PATH, override=False)
@@ -90,10 +97,11 @@ def main() -> int:
         if args.force_window or args.dry_run:
             print(f"[competitors] {msg}", flush=True)
 
-    if not args.force_window and not _within_window(now):
+    scope = [args.market] if args.market else [m.key for m in enabled_markets()]
+    markets = [mk for mk in scope if args.force_window or _within_window(now, mk)]
+    if not markets:
         return 0
-    if not _within_window(now):
-        _say("outside trading window — proceeding anyway (--force-window)")
+    _say(f"markets in window: {','.join(markets)}")
 
     competitors = _select(args.competitor)
     if args.backend:
@@ -111,22 +119,24 @@ def main() -> int:
         _say("no freestyle competitors to run")
         return 0
 
-    _say(f"running {len(competitors)} competitor(s) "
+    _say(f"running {len(competitors)} competitor(s) × {len(markets)} market(s) "
          f"now_ist={now.strftime('%H:%M:%S')} dry_run={args.dry_run}")
 
     totals = {"opened": 0, "closed": 0, "held": 0, "blocked": 0,
               "errors": 0, "paused": 0, "ok": 0}
-    for comp in competitors:
-        res = run_competitor_cycle(comp, dry_run=args.dry_run)
-        totals["ok"] += int(res.ok)
-        totals["paused"] += int(res.paused)
-        for k in ("opened", "closed", "held", "blocked", "errors"):
-            totals[k] += getattr(res, k)
-        status = "PAUSED" if res.paused else ("ok" if res.ok else "FAIL")
-        print(f"  {comp.id:<18} [{comp.backend}] {status}: {res.message[:160]}")
+    for mkt in markets:
+        for comp in competitors:
+            res = run_competitor_cycle(comp, dry_run=args.dry_run, market=mkt)
+            totals["ok"] += int(res.ok)
+            totals["paused"] += int(res.paused)
+            for k in ("opened", "closed", "held", "blocked", "errors"):
+                totals[k] += getattr(res, k)
+            status = "PAUSED" if res.paused else ("ok" if res.ok else "FAIL")
+            print(f"  [{mkt}] {comp.id:<18} [{comp.backend}] {status}: {res.message[:140]}")
 
     insert_audit("run_competitors", "run_summary",
-                 {**totals, "considered": len(competitors), "dry_run": args.dry_run})
+                 {**totals, "considered": len(competitors), "markets": markets,
+                  "dry_run": args.dry_run})
     _say(f"done · {totals}")
     return 0
 

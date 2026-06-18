@@ -1,86 +1,75 @@
 """
-Dynamic competition poller — runs every minute via cron during NSE market hours.
+Dynamic competition poller — runs every minute via cron.
 
-Polls last-traded-price (via yfinance) for the union of all active competitors'
-current-week mandated symbols that fall OUTSIDE the house WATCHLIST, writes them
-to `ticks`, then folds recent ticks into 1-minute candles. The incumbent
-scripts/poll_market.py already covers WATCHLIST, so this script only adds the
-*extra* symbols competitors chose — no double polling, and poll_market.py is
-left completely untouched.
+For each ENABLED market that's currently open, polls last-traded-price (via that
+market's own data adapter) for the union of all active competitors' current-week
+mandated symbols that fall OUTSIDE that market's house watchlist, writes them to
+`ticks`, then folds recent ticks into 1-minute candles. The incumbent
+poll_market.py already covers each market's house watchlist, so this script only
+adds the *extra* symbols competitors chose — no double polling.
 
-If no competitor has a mandate (or all mandated symbols are within WATCHLIST),
-this script no-ops silently. Like the other cron scripts it also no-ops outside
-market hours and on weekends.
+Each venue self-gates on its own calendar (NSE session, NYSE session, crypto
+24/7), exactly like poll_market.py, so the single cron line works for all markets
+and no-ops silently outside each market's hours.
 
-NOT yet wired into crontab — going live is a human decision (mirrors
-run_competitors.py). Intended cadence once enabled, alongside poll_market:
+  * * * * *  run_in_venv.sh scripts/poll_competition.py >> logs/poll_competition.log 2>&1
 
-  * 3-9 * * 1-5  run_in_venv.sh scripts/poll_competition.py >> logs/poll_competition.log 2>&1
-
-Why yfinance: the Kite app lacks the market-data add-on (kite.ltp/quote 403).
-Same rationale as poll_market.py.
+Why per-market adapters: IN uses yfinance .NS, US bare yfinance, crypto ccxt —
+all behind market.data.last_price (Kite quotes 403 on this account).
 """
 
 from __future__ import annotations
 
 import sys
-from datetime import datetime
-from decimal import Decimal
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import yfinance as yf
-
 from helm.competition.mandate import extra_polling_symbols
-from helm.config import MARKET_CLOSE, MARKET_OPEN
 from helm.data.store import insert_audit, insert_tick, roll_minute_candles
-
-IST = ZoneInfo("Asia/Kolkata")
-
-
-def _is_market_open() -> bool:
-    now = datetime.now(IST)
-    if now.weekday() >= 5:           # Sat/Sun
-        return False
-    return MARKET_OPEN <= now.time() <= MARKET_CLOSE
+from helm.markets import enabled_markets
 
 
 def main() -> int:
-    if not _is_market_open():
-        return 0
-
-    symbols = extra_polling_symbols()
-    if not symbols:
-        # Nothing mandated beyond the house watchlist — poll_market covers it.
-        return 0
-
-    now = datetime.now(IST)
     inserted = 0
     failed: list[str] = []
-    for symbol in symbols:
-        try:
-            info = yf.Ticker(f"{symbol}.NS").fast_info
-            ltp = Decimal(str(info.last_price))
-            insert_tick(now, symbol, ltp, None, {"source": "yfinance", "poller": "competition"})
-            inserted += 1
-        except Exception as exc:
-            failed.append(f"{symbol}: {exc}")
+    polled_markets: list[str] = []
+    candle_upserts = 0
 
-    candle_rows = roll_minute_candles()
+    for market in enabled_markets():
+        if not market.calendar.is_market_open():
+            continue
+        symbols = extra_polling_symbols(market=market.key)
+        if not symbols:
+            # Nothing mandated beyond this market's house watchlist.
+            continue
+        polled_markets.append(market.key)
+        now = market.calendar.now()
+        source = getattr(market.data, "source", "market")
+        for symbol in symbols:
+            ltp = market.data.last_price(symbol)
+            if ltp is None:
+                failed.append(f"{market.key}:{symbol}")
+                continue
+            insert_tick(now, symbol, ltp, None,
+                        {"source": source, "poller": "competition", "market": market.key},
+                        market=market.key)
+            inserted += 1
+        candle_upserts += roll_minute_candles(market=market.key)
+
+    if not polled_markets:
+        return 0
+
     insert_audit(
         actor="poll_competition",
         event="tick_poll",
         detail={
-            "ts": now.isoformat(),
-            "symbols": symbols,
+            "markets": polled_markets,
             "inserted": inserted,
             "failed": failed,
-            "candle_upserts": candle_rows,
+            "candle_upserts": candle_upserts,
         },
     )
-
     if failed:
         print(f"poll_competition: {inserted} ok, {len(failed)} failed: {failed}",
               file=sys.stderr)

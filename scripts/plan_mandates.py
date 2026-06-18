@@ -51,6 +51,7 @@ from helm.competition.mandate import (
 )
 from helm.competition.runner import Competitor, freestyle_competitors, get_competitor
 from helm.data.store import insert_audit
+from helm.markets import enabled_markets
 
 ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 
@@ -88,6 +89,8 @@ def main() -> int:
     p.add_argument("--week-start", default=None, metavar="YYYY-MM-DD",
                    help="plan for the week containing this date (normalised to its "
                         "Monday); overrides --next-week")
+    p.add_argument("--market", default=None,
+                   help="plan just one market (IN/US/CRYPTO); default = all enabled")
     args = p.parse_args()
 
     load_dotenv(ENV_PATH, override=False)
@@ -113,35 +116,37 @@ def main() -> int:
         print("[mandates] no freestyle competitors to plan")
         return 0
 
+    markets = [args.market] if args.market else [m.key for m in enabled_markets()]
     print(f"[mandates] week_start={wk.isoformat()} competitors={len(competitors)} "
-          f"dry_run={args.dry_run} force={args.force}")
+          f"markets={markets} dry_run={args.dry_run} force={args.force}")
 
     planned = 0
-    for comp in competitors:
-        if args.dry_run:
-            plan = generate_mandate(comp, wk_start=wk)
-            if plan["paused"]:
-                print(f"  {comp.id:<18} [{comp.backend}] PAUSED (quota) — no plan")
+    for mkt in markets:
+        for comp in competitors:
+            if args.dry_run:
+                plan = generate_mandate(comp, wk_start=wk, market=mkt)
+                if plan["paused"]:
+                    print(f"  [{mkt}] {comp.id:<18} [{comp.backend}] PAUSED (quota) — no plan")
+                    continue
+                print(f"  [{mkt}] {comp.id:<18} [{comp.backend}] "
+                      f"{'(fallback) ' if plan['fellback'] else ''}"
+                      f"universe={plan['universe']}")
+                print(f"      rationale: {plan['rationale'][:160]}")
                 continue
-            print(f"  {comp.id:<18} [{comp.backend}] "
-                  f"{'(fallback) ' if plan['fellback'] else ''}"
-                  f"universe={plan['universe']}")
-            print(f"      rationale: {plan['rationale'][:160]}")
-            continue
-        res = ensure_mandate(comp, force=args.force, wk_start=wk)
-        planned += int(res["created"])
-        if res["paused"]:
-            tag = "paused(quota)"
-        elif res["created"]:
-            tag = "planned(fallback)" if res["fellback"] else "planned"
-        else:
-            tag = "kept"
-        print(f"  {comp.id:<18} [{comp.backend}] {tag}: {res['universe']}")
+            res = ensure_mandate(comp, force=args.force, wk_start=wk, market=mkt)
+            planned += int(res["created"])
+            if res["paused"]:
+                tag = "paused(quota)"
+            elif res["created"]:
+                tag = "planned(fallback)" if res["fellback"] else "planned"
+            else:
+                tag = "kept"
+            print(f"  [{mkt}] {comp.id:<18} [{comp.backend}] {tag}: {res['universe']}")
 
     if not args.dry_run:
         insert_audit("plan_mandates", "run_summary",
                      {"week_start": wk.isoformat(), "considered": len(competitors),
-                      "planned": planned, "forced": args.force})
+                      "markets": markets, "planned": planned, "forced": args.force})
     return 0
 
 
