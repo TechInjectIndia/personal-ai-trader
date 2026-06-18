@@ -71,5 +71,9 @@ try:
     except Exception:
         pass
 except Exception as exc:  # noqa: BLE001 — read-only page; degrade, don't crash
-    st.info("Multi-market schema not present yet — run "
-            f"`scripts/migrate_multimarket.py` first.  ({type(exc).__name__})")
+    import psycopg
+    if isinstance(exc, (psycopg.errors.UndefinedTable, psycopg.errors.UndefinedColumn)):
+        st.info("Multi-market schema not present yet — run "
+                "`scripts/migrate_multimarket.py` first.")
+    else:
+        st.exception(exc)   # surface the real error instead of masking it

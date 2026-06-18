@@ -46,5 +46,9 @@ try:
             "expectancy. The filter is sign-based, so currencies are each judged "
             "against zero — not compared against one another. Funding is manual.")
 except Exception as exc:  # noqa: BLE001 — read-only page; degrade, don't crash
-    st.info("No multi-market data yet — run `scripts/migrate_multimarket.py` and "
-            f"let trades accumulate.  ({type(exc).__name__})")
+    import psycopg
+    if isinstance(exc, (psycopg.errors.UndefinedTable, psycopg.errors.UndefinedColumn)):
+        st.info("No multi-market data yet — run `scripts/migrate_multimarket.py` "
+                "and let trades accumulate.")
+    else:
+        st.exception(exc)   # surface the real error instead of masking it

@@ -67,5 +67,9 @@ try:
         st.info("No readiness runs recorded yet. Run: "
                 "`python scripts/go_live_readiness.py --persist`")
 except Exception as exc:  # noqa: BLE001 — read-only page; degrade, don't crash
-    st.info("Go-live readiness not available yet — migrate + run the script.  "
-            f"({type(exc).__name__})")
+    import psycopg
+    if isinstance(exc, (psycopg.errors.UndefinedTable, psycopg.errors.UndefinedColumn)):
+        st.info("Go-live readiness not available yet — run "
+                "`scripts/migrate_multimarket.py` first.")
+    else:
+        st.exception(exc)   # surface the real error instead of masking it

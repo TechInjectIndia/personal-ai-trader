@@ -44,5 +44,9 @@ try:
         st.caption("Deterministic, decider-off backtests. Short windows (esp. yfinance "
                    "intraday for IN/US) mean sparse trades — read alongside the window_days.")
 except Exception as exc:  # noqa: BLE001 — read-only page; degrade, don't crash
-    st.info("Backtest evidence not available yet — migrate + run the sweep.  "
-            f"({type(exc).__name__})")
+    import psycopg
+    if isinstance(exc, (psycopg.errors.UndefinedTable, psycopg.errors.UndefinedColumn)):
+        st.info("Backtest evidence not available yet — run "
+                "`scripts/migrate_multimarket.py` first.")
+    else:
+        st.exception(exc)   # surface the real error instead of masking it
