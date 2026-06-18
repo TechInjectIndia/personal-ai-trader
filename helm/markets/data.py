@@ -11,7 +11,7 @@ soft (None / []), mirroring the live yfinance try/except.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 UTC = timezone.utc
@@ -270,6 +270,20 @@ def _openbb_interval(bar_minutes: int) -> str:
     return f"{bar_minutes}m"
 
 
+def _obb_bar_ts(ts) -> datetime:
+    """Normalize an OpenBB index value to a tz-aware UTC datetime. OpenBB returns
+    pandas Timestamps for intraday but plain `datetime.date` for DAILY bars (and
+    occasionally ISO strings); each needs different handling — a bare `date` has
+    no `.replace(tzinfo=...)`, which is the trap."""
+    if hasattr(ts, "to_pydatetime"):          # pandas Timestamp → datetime
+        ts = ts.to_pydatetime()
+    if isinstance(ts, datetime):
+        return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
+    if isinstance(ts, date):                  # daily index is a plain date
+        return datetime(ts.year, ts.month, ts.day, tzinfo=UTC)
+    return _parse_iso(str(ts))                # last resort: ISO string
+
+
 def _obb_to_candles(df) -> list[dict]:
     """OpenBB `.to_dataframe()` → candle dicts. OpenBB uses lowercase columns and
     a date index (or a 'date' column); handle both, fail-soft."""
@@ -279,13 +293,10 @@ def _obb_to_candles(df) -> list[dict]:
         df = df.set_index("date")
     out: list[dict] = []
     for i in range(len(df)):
-        row, ts = df.iloc[i], df.index[i]
-        ts = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
-        if getattr(ts, "tzinfo", None) is None:
-            ts = ts.replace(tzinfo=UTC)
+        row = df.iloc[i]
         get = lambda name: (row[name] if name in row else None)  # noqa: E731
-        out.append(_candle(ts, get("open"), get("high"), get("low"),
-                           get("close"), get("volume")))
+        out.append(_candle(_obb_bar_ts(df.index[i]), get("open"), get("high"),
+                           get("low"), get("close"), get("volume")))
     return out
 
 

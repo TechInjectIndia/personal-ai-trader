@@ -46,6 +46,24 @@ def test_obb_to_candles_parses_lowercase_date_indexed_frame():
     assert first["bar_ts"].tzinfo is not None  # naive index → stamped UTC
 
 
+def test_obb_to_candles_handles_daily_plain_date_index():
+    # OpenBB returns a plain `datetime.date` index for DAILY bars (not a pandas
+    # Timestamp) — date.replace(tzinfo=...) is a TypeError. Regression for the
+    # parse crash found in live validation (daily fetch returned 0 candles).
+    import datetime as dt
+
+    pd = pytest.importorskip("pandas")
+    df = pd.DataFrame(
+        {"open": [100.0], "high": [101.0], "low": [99.0], "close": [100.5],
+         "volume": [10]},
+        index=[dt.date(2026, 6, 1)],
+    )
+    candles = _obb_to_candles(df)
+    assert len(candles) == 1
+    assert candles[0]["bar_ts"] == dt.datetime(2026, 6, 1, tzinfo=UTC)
+    assert str(candles[0]["close"]) == "100.5"
+
+
 def test_obb_to_candles_accepts_date_column():
     pd = pytest.importorskip("pandas")
     df = pd.DataFrame(
