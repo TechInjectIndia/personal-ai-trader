@@ -23,8 +23,23 @@ mkdir -p "$LOCK_DIR"
 _lockname="$(basename "${1:-job}" .py)"
 _lock="${LOCK_DIR}/${_lockname}.lock"
 
+# --- CPU/IO priority -------------------------------------------------------
+# Trading-critical jobs (price polling, scanning, position management, the
+# decider, the competition execution loop, the Kite-token jobs) run at NORMAL
+# priority so a live stop/target exit is never starved. Everything else — the
+# learning agents (PM/Engineer/Tester, retros), backtests, and the Context
+# Engine ingest, which can be CPU/IO-heavy and now overlap the 24/7 crypto and
+# US sessions — runs de-prioritised (nice + best-effort-low IO) so it yields to
+# trading. Unquoted on purpose: this is our own controlled string, and it must
+# word-split into the command (empty = no prefix for trading jobs).
+case " poll_market scan_signals manage_positions decide_signals poll_competition run_competitors kite_auto_login check_kite_token " in
+    *" ${_lockname} "*) PRIO="" ;;
+    *)                  PRIO="nice -n 10 ionice -c2 -n7" ;;
+esac
+
 set +e
-flock -n -E 99 "$_lock" python "$@"
+# shellcheck disable=SC2086  # $PRIO must word-split into the command
+flock -n -E 99 "$_lock" $PRIO python "$@"
 rc=$?
 set -e
 if [ "$rc" -eq 99 ]; then
