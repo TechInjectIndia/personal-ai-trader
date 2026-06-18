@@ -184,3 +184,36 @@ RELEASES.md                     | 10 ++++++++++
  helm/strategies/intraday/orb.py |  4 ++++
  2 files changed, 14 insertions(+)
 ```
+
+## release 243 · e061edcb9d · 2026-06-17 16:50 IST
+
+add_filter block-frozen-ticker (pre) to vwap_reclaim
+
+```
+...enshot 2026-06-09 at 3.23.38\342\200\257PM.png" | Bin 0 -> 262453 bytes
+ Upwork_Playbook_Sumeet.docx                        | Bin 0 -> 26226 bytes
+ bloomberg.xlsx                                     | Bin 0 -> 2579048 bytes
+ case-study-prompt.MD                               | 255 +++++++++++++++++++
+ case-study.md                                      |  54 ++++
+ case-study/Helm-Case-Study-TechInject.pdf          | Bin 2631934 -> 4741596 bytes
+ case-study/assets/01-decision-pipeline.svg         | 109 ++++++++
+ case-study/assets/02-self-improvement-loop.svg     |  91 +++++++
+ case-study/assets/03-competition-league.svg        | 110 ++++++++
+ case-study/assets/04-platform-overview.svg         |  80 ++++++
+ case-study/assets/screenshot-retro-expanded.png    | Bin 492735 -> 1538887 bytes
+ case-study/assets/screenshot-retros.png            | Bin 356344 -> 1219821 bytes
+ docs/competition-build-brief.md                    |  67 +++++
+ docs/frd/M1-market-abstraction.md                  |  66 +++++
+ docs/frd/M2-schema-namespacing-wallets.md          |  58 +++++
+ docs/frd/M3-data-adapters-calendars.md             |  46 ++++
+ docs/frd/M4-cost-models.md                         |  48 ++++
+ docs/frd/M5-historical-backtester.md               |  45 ++++
+ docs/frd/M6-crypto-enablement.md                   |  38 +++
+ docs/frd/M7-us-equities-enablement.md              |  38 +++
+ docs/frd/M8-go-live-funding-gate.md                |  49 ++++
+ docs/prd/helm-platform-prd.md                      | 276 +++++++++++++++++++++
+ docs/prd/multi-agent-debate-decider.md             | 114 +++++++++
+ docs/prd/multi-market-prd.md                       |  91 +++++++
+ helm/strategies/intraday/vwap.py                   |   5 +
+ 25 files changed, 1640 insertions(+)
+```
