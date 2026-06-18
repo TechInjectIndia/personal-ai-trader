@@ -55,9 +55,15 @@ try:
             f"ORDER BY exit_ts DESC LIMIT 50", (_key,)).fetchall())
 
     st.markdown("#### Open positions")
-    wrapped_table(opens) if not opens.empty else st.caption("No open positions.")
+    if not opens.empty:
+        wrapped_table(opens)
+    else:
+        st.caption("No open positions.")
     st.markdown("#### Recent closed trades")
-    wrapped_table(closed) if not closed.empty else st.caption("No closed trades in this market yet.")
+    if not closed.empty:
+        wrapped_table(closed)
+    else:
+        st.caption("No closed trades in this market yet.")
 
     try:
         from helm.agents.instincts import lessons_for
