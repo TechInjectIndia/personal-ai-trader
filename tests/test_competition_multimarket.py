@@ -11,6 +11,7 @@ pytestmark = pytest.mark.skipif(os.environ.get("HELM_SEARCH_PATH") != "mm_test",
                                 reason="integration test; needs the isolated mm_test schema")
 
 from helm.competition import execute as ex  # noqa: E402
+from helm.competition import leaderboard as lb  # noqa: E402
 from helm.competition import wallet as wl  # noqa: E402
 from helm.data.store import conn  # noqa: E402
 
@@ -66,6 +67,29 @@ def test_crypto_open_lands_in_crypto_book_only():
         # IN book is untouched; crypto book now has locked capital.
         assert wl.competitor_wallet_state(cid, "IN").locked_in_open == Decimal("0")
         assert wl.competitor_wallet_state(cid, "CRYPTO").locked_in_open > 0
+    finally:
+        _wipe()
+
+
+def test_leaderboard_is_market_scoped_and_currency_correct():
+    cid = _mkcompetitor()
+    try:
+        # One closed crypto trade → a CRYPTO wallet + a crypto-scoped board.
+        ex.execute_competitor_open(cid, "ETH", "BUY", Decimal("100"), Decimal("95"),
+                                   Decimal("110"), qty=None, actor=cid, market="CRYPTO")
+        markets = lb.competition_markets()
+        assert "IN" in markets and "CRYPTO" in markets and markets[0] == "IN"
+
+        in_board = {r.competitor_id: r for r in lb.leaderboard("IN")}
+        crypto_board = {r.competitor_id: r for r in lb.leaderboard("CRYPTO")}
+        # The test competitor has an IN wallet (seeded) and a CRYPTO wallet (auto).
+        assert in_board[cid].currency == "INR" and in_board[cid].market == "IN"
+        assert crypto_board[cid].currency == "USD"
+        assert in_board[cid].initial == Decimal("50000")        # ₹ basis
+        assert crypto_board[cid].initial == Decimal("1000")     # $ basis (crypto seed)
+        # No double-counting: exactly one row per competitor per board.
+        assert len(lb.leaderboard("IN")) == len({r.competitor_id
+                                                 for r in lb.leaderboard("IN")})
     finally:
         _wipe()
 

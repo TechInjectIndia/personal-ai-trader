@@ -24,8 +24,9 @@ from datetime import datetime, timezone
 import pandas as pd
 import streamlit as st
 
-from helm.competition.leaderboard import leaderboard
+from helm.competition.leaderboard import competition_markets, leaderboard
 from helm.competition.mandate import current_mandate, current_week_start
+from helm.config import market_framing
 from helm.competition.quota import quota_status
 from helm.dashboard.agents import HOUSE_ID
 from helm.dashboard.format import fmt_ist, paginate, wrapped_table
@@ -50,9 +51,9 @@ with conn() as _hc:
     _n_retired = list(_hc.execute(
         "select count(*) n from competitors where status='retired'"))[0]["n"]
 page_header("Competition League",
-            f"{_n_active} AI agents live · ₹50k each · one human judge", icon="🏆")
+            f"{_n_active} AI agents live · isolated wallets · one human judge", icon="🏆")
 st.caption(
-    f"{_n_active} AI agents, isolated ₹50k wallets, same market — judged on equity "
+    f"{_n_active} AI agents, isolated per-market wallets — judged on equity "
     "AND on how they reason. A live, data-driven roster: "
     f"{_n_retired} underperformers retired on P&L.")
 
@@ -183,7 +184,8 @@ def _retired_verdict(row) -> str:
     if row.trades == 0:
         return "Never booked a trade in its window. Retired."
     win = row.win_rate_pct or 0
-    return (f"Lost money on live paper capital — net ₹{pnl:,.0f} over "
+    cur = market_framing(row.market)["currency_symbol"]
+    return (f"Lost money on live paper capital — net {cur}{pnl:,.0f} over "
             f"{row.trades} trades ({win:.0f}% win). Retired on P&L.")
 
 
@@ -230,7 +232,8 @@ def _build_card(row, persona: str, team: dict[str, dict],
     if live:
         pills += pill("executing", "live")
 
-    foot_left = f"<b>₹{float(row.equity):,.0f}</b> · {row.progress_pct:+.1f}%"
+    _cur = market_framing(row.market)["currency_symbol"]
+    foot_left = f"<b>{_cur}{float(row.equity):,.0f}</b> · {row.progress_pct:+.1f}%"
     qbits = []
     if open_tasks:
         qbits.append(f"{open_tasks} open")
@@ -249,10 +252,18 @@ def _build_card(row, persona: str, team: dict[str, dict],
 
 
 # ─── 1. Standings ──────────────────────────────────────────────────────
-rows = leaderboard()
+# One market at a time — equity in ₹ (IN) and $ (US/crypto) can't share a
+# ranking. Default IN keeps the incumbent board.
+_markets = competition_markets()
+_MKT_LABEL = {"IN": "India (NSE) · ₹", "US": "US equities · $", "CRYPTO": "Crypto · $"}
+market = (st.selectbox("Market", _markets, format_func=lambda m: _MKT_LABEL.get(m, m))
+          if len(_markets) > 1 else _markets[0])
+CCY = market_framing(market)["currency_symbol"]
+
+rows = leaderboard(market)
 if not rows:
-    st.warning("No competitors registered yet. Run `python scripts/migrate_competition.py` "
-               "then `python scripts/seed_competitors.py`.")
+    st.info(f"No competitor has traded {market} yet — wallets seed on first trade, "
+            "and the weekly mandate planner runs Sunday.")
     st.stop()
 
 active_rows = [r for r in rows if r.status != "retired"]
@@ -264,8 +275,8 @@ total_trades = sum(r.trades for r in ranked)
 _lead_pnl = float(leader.realised_net_pnl)
 kpi_grid([
     kpi_card("Leader", leader.name, icon="medal",
-             sub=f"₹{float(leader.equity):,.0f} equity", sub_kind="info"),
-    kpi_card("Leader P&L", f"₹{_lead_pnl:,.0f}", icon="wallet",
+             sub=f"{CCY}{float(leader.equity):,.0f} equity", sub_kind="info"),
+    kpi_card("Leader P&L", f"{CCY}{_lead_pnl:,.0f}", icon="wallet",
              sub=f"{leader.progress_pct:+.1f}% vs start",
              sub_kind="pos" if _lead_pnl >= 0 else "neg"),
     kpi_card("Open positions (all)", f"{active_trades}", icon="folder"),
@@ -305,22 +316,23 @@ else:
 agent_grid(cards, cols=3)
 
 st.subheader("Standings")
+_eq, _pl, _av = f"Equity {CCY}", f"P&L {CCY}", f"Available {CCY}"
 table = pd.DataFrame([{
     "#": r.rank,
     "Competitor": r.name,
     "Backend": r.backend,
     "Type": r.autonomy_level,
     "Status": r.status,
-    "Equity ₹": f"{float(r.equity):,.0f}",
-    "P&L ₹": f"{float(r.realised_net_pnl):,.0f}",
+    _eq: f"{float(r.equity):,.0f}",
+    _pl: f"{float(r.realised_net_pnl):,.0f}",
     "Prog %": f"{r.progress_pct:+.1f}",
     "Open": r.open_positions,
     "Trades": r.trades,
     "Win %": f"{r.win_rate_pct:.0f}" if r.win_rate_pct is not None else "—",
-    "Available ₹": f"{float(r.available):,.0f}",
+    _av: f"{float(r.available):,.0f}",
 } for r in active_rows])
-wrapped_table(table, right_align=["Equity ₹", "P&L ₹", "Prog %", "Open",
-                                  "Trades", "Win %", "Available ₹"])
+wrapped_table(table, right_align=[_eq, _pl, "Prog %", "Open",
+                                  "Trades", "Win %", _av])
 
 # ─── 2b. Retired — benchmarked and cut ─────────────────────────────────
 if retired_rows:
@@ -332,11 +344,11 @@ if retired_rows:
     rcards: list[str] = []
     for r in retired_rows:
         pnl = float(r.realised_net_pnl)
-        pills = pill("retired", "closed") + pill(f"₹{pnl:,.0f}", "neg")
+        pills = pill("retired", "closed") + pill(f"{CCY}{pnl:,.0f}", "neg")
         verdict = ('<div class="helm-team-label">Why retired</div>'
                    '<div style="color:#9aa4b2;font-size:0.85rem;line-height:1.4;">'
                    f"{_retired_verdict(r)}</div>")
-        foot_left = f"<b>₹{float(r.equity):,.0f}</b> · {r.progress_pct:+.1f}%"
+        foot_left = f"<b>{CCY}{float(r.equity):,.0f}</b> · {r.progress_pct:+.1f}%"
         foot_right = (f"{r.trades} trades · "
                       f"{(r.win_rate_pct or 0):.0f}% win")
         rcards.append(agent_card(
@@ -360,7 +372,7 @@ st.subheader(f"Mandates — week of {current_week_start():%d %b %Y}")
 freestyle = [r for r in active_rows if r.autonomy_level == "freestyle"]
 any_mandate = False
 for r in freestyle:
-    m = current_mandate(r.competitor_id)
+    m = current_mandate(r.competitor_id, market=market)
     if m and m.get("universe"):
         any_mandate = True
         with st.expander(f"{r.name} — {len(m['universe'])} symbols", expanded=False):
@@ -438,9 +450,10 @@ else:
 
 with st.expander("How this page is wired"):
     st.markdown(
-        "- **Standings** come from `helm.competition.leaderboard` — the house "
-        "book is `competitor_id NULL OR 'house-claude'`, everyone else is their "
-        "own id, all on a ₹50k basis.\n"
+        "- **Standings** come from `helm.competition.leaderboard`, scoped to the "
+        "selected market — the house book is `competitor_id NULL OR "
+        "'house-claude'`, everyone else is their own id, each on its own "
+        "per-market wallet.\n"
         "- **Agents** join `competitors` with the latest `agent_runs` per role "
         "(PM/Engineer/Tester) plus open/in-flight `agent_tasks` and unverified "
         "`releases`; 'executing now' = a run with no `finished_ts`, a run within "

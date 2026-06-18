@@ -22,9 +22,9 @@ from helm.competition.mandate import current_mandate, current_week_start
 from helm.competition.quota import quota_status
 
 
-def _print_leaderboard() -> None:
-    rows = leaderboard()
-    print(f"\n=== Leaderboard (week of {current_week_start():%Y-%m-%d}) ===")
+def _print_leaderboard(market: str = "IN") -> None:
+    rows = leaderboard(market)
+    print(f"\n=== Leaderboard · {market} (week of {current_week_start():%Y-%m-%d}) ===")
     print(f"{'#':>2}  {'competitor':<18} {'backend':<9} {'equity':>10} "
           f"{'P&L':>9} {'prog%':>7} {'open':>4} {'trades':>6} {'win%':>5} {'E2C':>5}")
     for r in rows:
@@ -35,14 +35,14 @@ def _print_leaderboard() -> None:
               f"{r.progress_pct:>+7.1f} {r.open_positions:>4} {r.trades:>6} {win:>5} {e2c:>5}")
 
 
-def _print_mandates() -> None:
-    print("\n=== This week's mandates ===")
-    rows = leaderboard()
+def _print_mandates(market: str = "IN") -> None:
+    print(f"\n=== This week's mandates · {market} ===")
+    rows = leaderboard(market)
     any_mandate = False
     for r in rows:
         if r.autonomy_level != "freestyle":
             continue
-        m = current_mandate(r.competitor_id)
+        m = current_mandate(r.competitor_id, market=market)
         if m and m.get("universe"):
             any_mandate = True
             print(f"  {r.competitor_id:<18} {list(m['universe'])}")
@@ -65,14 +65,15 @@ def _print_quotas() -> None:
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--quotas", action="store_true", help="show only quota state")
+    p.add_argument("--market", default="IN", help="market to show (IN/US/CRYPTO)")
     args = p.parse_args()
 
     if args.quotas:
         _print_quotas()
         return 0
 
-    _print_leaderboard()
-    _print_mandates()
+    _print_leaderboard(args.market)
+    _print_mandates(args.market)
     _print_quotas()
     return 0
 

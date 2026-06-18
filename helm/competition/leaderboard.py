@@ -37,6 +37,8 @@ class LeaderRow:
     model: str | None
     autonomy_level: str
     status: str
+    market: str
+    currency: str
     initial: Decimal
     realised_net_pnl: Decimal
     equity: Decimal
@@ -56,6 +58,16 @@ class LeaderRow:
     gross_expectancy: Decimal | None = None
 
 
+def competition_markets() -> list[str]:
+    """Markets that have at least one competitor wallet (drives the dashboard
+    market selector). IN first, then the rest — always non-empty."""
+    with conn() as c:
+        found = {r["market"] for r in c.execute(
+            "SELECT DISTINCT market FROM competitor_wallets")}
+    ordered = (["IN"] if "IN" in found else []) + sorted(found - {"IN"})
+    return ordered or ["IN"]
+
+
 def _book_filter(competitor_id: str) -> tuple[str, tuple]:
     """SQL fragment + params selecting one competitor's paper_trades.
 
@@ -66,7 +78,7 @@ def _book_filter(competitor_id: str) -> tuple[str, tuple]:
     return "competitor_id = %s", (competitor_id,)
 
 
-def _stats(c, competitor_id: str) -> dict:
+def _stats(c, competitor_id: str, market: str = "IN") -> dict:
     where, params = _book_filter(competitor_id)
     return c.execute(
         f"""
@@ -82,30 +94,34 @@ def _stats(c, competitor_id: str) -> dict:
           COUNT(*) FILTER (WHERE status = 'CLOSED'
                            AND COALESCE(net_pnl_inr, pnl_inr) < 0) AS losses
         FROM paper_trades
-        WHERE {where}
+        WHERE {where} AND market = %s
         """,
-        params,
+        (*params, market),
     ).fetchone()
 
 
-def leaderboard() -> list[LeaderRow]:
-    """All competitors as ranked LeaderRows (highest equity first)."""
+def leaderboard(market: str = "IN") -> list[LeaderRow]:
+    """Competitors with a wallet in `market`, as ranked LeaderRows (highest equity
+    first). Scoped to one market because equity in different currencies (₹ vs $)
+    can't share a ranking. IN is the default (byte-identical to the prior board)."""
     rows: list[LeaderRow] = []
     with conn() as c:
         competitors = list(c.execute(
             """
             SELECT comp.id, comp.name, comp.backend, comp.model,
                    comp.autonomy_level, comp.status,
-                   w.initial_capital_inr
+                   w.initial_capital_inr, w.currency
             FROM competitors comp
-            LEFT JOIN competitor_wallets w ON w.competitor_id = comp.id
+            JOIN competitor_wallets w
+              ON w.competitor_id = comp.id AND w.market = %s
             ORDER BY comp.id
-            """
+            """,
+            (market,),
         ))
         for r in competitors:
             initial = Decimal(r["initial_capital_inr"]) if r["initial_capital_inr"] is not None \
                 else Decimal("0")
-            s = _stats(c, r["id"])
+            s = _stats(c, r["id"], market)
             realised = Decimal(s["realised"])
             locked = Decimal(s["locked"])
             equity = initial + realised
@@ -126,6 +142,7 @@ def leaderboard() -> list[LeaderRow]:
                 competitor_id=r["id"], name=r["name"] or r["id"],
                 backend=r["backend"] or "", model=r["model"],
                 autonomy_level=r["autonomy_level"] or "", status=r["status"] or "",
+                market=market, currency=r["currency"] or "INR",
                 initial=initial, realised_net_pnl=realised, equity=equity,
                 locked=locked, available=available, open_positions=int(s["open_n"]),
                 trades=trades, wins=wins, losses=int(s["losses"]),
