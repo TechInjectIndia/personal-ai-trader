@@ -35,9 +35,11 @@ class Calendar(Protocol):
     """When a venue trades + its square-off policy. `is_market_open` gates the
     poll/manage loops; `is_trading_window` gates new entries (scan/decide);
     `square_off_at` is the EOD flatten time (None ⇒ 24/7, no forced flatten);
-    `trading_day_key` is the venue-local 'today' boundary."""
+    `trading_day_key` is the venue-local 'today' boundary; `session_hours` is the
+    regular (open, close) for display (None ⇒ 24/7), labelled with `tz_label`."""
 
     tz: ZoneInfo
+    tz_label: str   # short timezone label for display ("IST" | "ET" | "UTC")
 
     def now(self) -> datetime: ...
 
@@ -48,6 +50,8 @@ class Calendar(Protocol):
     def square_off_at(self) -> time | None: ...
 
     def trading_day_key(self, ts: datetime) -> date: ...
+
+    def session_hours(self) -> tuple[time, time] | None: ...
 
 
 @runtime_checkable

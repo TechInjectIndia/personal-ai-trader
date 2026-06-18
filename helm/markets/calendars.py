@@ -28,9 +28,13 @@ class NSECalendar:
     """NSE equities: Mon–Fri, 09:15–15:30 IST, square-off 15:15 IST."""
 
     tz = IST
+    tz_label = "IST"
 
     def now(self) -> datetime:
         return datetime.now(self.tz)
+
+    def session_hours(self) -> tuple[time, time] | None:
+        return MARKET_OPEN, MARKET_CLOSE
 
     def _local(self, now: datetime | None) -> datetime:
         return (now or self.now()).astimezone(self.tz)
@@ -64,9 +68,13 @@ class AlwaysOpen:
     The 'today' boundary is the UTC date (daily-loss reset at 00:00 UTC)."""
 
     tz = ZoneInfo("UTC")
+    tz_label = "UTC"
 
     def now(self) -> datetime:
         return datetime.now(self.tz)
+
+    def session_hours(self) -> tuple[time, time] | None:
+        return None   # 24/7 — no regular session window
 
     def is_market_open(self, now: datetime | None = None) -> bool:
         return True
@@ -90,6 +98,7 @@ class NYSECalendar:
     missing it degrades to a weekday + fixed-hours gate (no holiday awareness)."""
 
     tz = ZoneInfo("America/New_York")
+    tz_label = "ET"
     OPEN = time(9, 30)
     CLOSE = time(16, 0)
     ENTRY_END = time(15, 45)   # mirror IN: no new entries near the bell
@@ -100,6 +109,9 @@ class NYSECalendar:
 
     def now(self) -> datetime:
         return datetime.now(self.tz)
+
+    def session_hours(self) -> tuple[time, time] | None:
+        return self.OPEN, self.CLOSE   # regular session (half-days handled live)
 
     def _local(self, now: datetime | None) -> datetime:
         return (now or self.now()).astimezone(self.tz)

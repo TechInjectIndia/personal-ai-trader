@@ -9,10 +9,13 @@ info note if the multi-market migration hasn't run yet.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pandas as pd
 import streamlit as st
 
 from helm.config import HOUSE_TRADE_FILTER
+from helm.dashboard import trade_explorer as te
 from helm.dashboard.format import wrapped_table
 from helm.dashboard.theme import apply_theme, kpi_card, kpi_grid, page_header
 from helm.data.store import conn
@@ -40,8 +43,19 @@ try:
                  sub_kind="pos" if ws.realised_net_pnl >= 0 else "neg"),
         kpi_card("Locked in open", f"{_sym}{ws.locked_in_open:,.2f}", icon="lock"),
     ])
-    if _m.calendar.square_off_at() is None:
-        st.caption("24/7 venue — no end-of-day square-off; positions time-stop instead.")
+    _cal = _m.calendar
+    _hrs = _cal.session_hours()
+    if _hrs is None:
+        st.markdown(f"**Hours** · 24/7 ({_cal.tz_label}) · 🟢 always open · "
+                    "no EOD square-off (positions time-stop instead)")
+    else:
+        _o, _c = _hrs
+        _sq = _cal.square_off_at()
+        _line = f"**Hours** · {_o.strftime('%H:%M')}–{_c.strftime('%H:%M')} {_cal.tz_label}"
+        if _sq is not None:
+            _line += f" · square-off {_sq.strftime('%H:%M')}"
+        _line += f" · {'🟢 Open now' if _cal.is_market_open() else '⚪ Closed'}"
+        st.markdown(_line)
 
     with conn() as c:
         opens = pd.DataFrame(c.execute(
@@ -76,6 +90,70 @@ try:
                  "scope": x.get("market") or "all markets"} for x in lessons]))
     except Exception:
         pass
+
+    # --- Trade explorer: every agent × every market, filterable + sortable ---
+    st.divider()
+    st.markdown("### Trade explorer")
+    st.caption("Closed trades across every agent and market — filter and sort.")
+
+    with conn() as c:
+        agent_opts = te.agent_options(c)
+    agent_labels = dict(agent_opts)
+    mkt_opts = [(te.ALL, "All markets")] + [(k, m.name) for k, m in _markets.items()]
+    mkt_labels = dict(mkt_opts)
+
+    f1, f2, f3, f4, f5 = st.columns([1.5, 1.3, 1, 1.2, 0.8])
+    with f1:
+        sel_agent = st.selectbox("Agent", [v for v, _ in agent_opts],
+                                 format_func=lambda v: agent_labels[v], key="te_agent")
+    with f2:
+        sel_mkt = st.selectbox("Market", [v for v, _ in mkt_opts],
+                               format_func=lambda v: mkt_labels[v], key="te_market")
+    with f3:
+        sel_period = st.selectbox("Time frame", list(te.PERIODS), index=1, key="te_period")
+    with f4:
+        sel_sort = st.selectbox("Sort by", list(te.SORTS), key="te_sort")
+    with f5:
+        sel_desc = st.toggle("Desc", value=True, key="te_desc")
+
+    cutoff = te.period_cutoff(sel_period, datetime.now(te.IST))
+    with conn() as c:
+        rows = te.query_trades(c, sel_agent, sel_mkt, cutoff)
+
+    if not rows:
+        st.caption("No closed trades match these filters.")
+    else:
+        recs = []
+        for r in rows:
+            pct = te.pct_net(r["net"], r["entry_price"], r["qty"])
+            mkt = _markets.get(r["market"])
+            csym = _CCY.get(mkt.currency, "") if mkt else ""
+            recs.append({
+                "Time": r["exit_ts"].astimezone(te.IST).strftime("%Y-%m-%d %H:%M"),
+                "Agent": te.agent_label(r["competitor_id"], agent_labels),
+                "Market": r["market"],
+                "Symbol": r["symbol"],
+                "Side": r["side"],
+                "Qty": float(r["qty"]) if r["qty"] is not None else None,
+                "Entry": float(r["entry_price"]) if r["entry_price"] is not None else None,
+                "Exit": float(r["exit_price"]) if r["exit_price"] is not None else None,
+                "Net P&L": f"{csym}{float(r['net']):,.2f}" if r["net"] is not None else "—",
+                "% Net": round(pct, 2) if pct is not None else None,
+                "Reason": r["exit_reason"],
+                "Strategy": r["strategy"],
+                "pct": pct if pct is not None else float("-inf"),   # hidden sort keys
+                "net": float(r["net"]) if r["net"] is not None else float("-inf"),
+                "ts": r["exit_ts"],
+            })
+        wins = sum(1 for r in rows if (r["net"] or 0) > 0)
+        summary = f"{len(rows)} trades · win {100 * wins / len(rows):.0f}%"
+        if sel_mkt != te.ALL:
+            net_sum = sum(float(r["net"] or 0) for r in rows)
+            summary += f" · net {_CCY.get(_markets[sel_mkt].currency, '')}{net_sum:,.2f}"
+        st.caption(summary)
+        df = pd.DataFrame(recs).sort_values(te.SORTS[sel_sort],
+                                            ascending=not sel_desc, kind="stable")
+        wrapped_table(df.drop(columns=["pct", "net", "ts"]))
 except Exception as exc:  # noqa: BLE001 — read-only page; degrade, don't crash
     import psycopg
     if isinstance(exc, (psycopg.errors.UndefinedTable, psycopg.errors.UndefinedColumn)):
