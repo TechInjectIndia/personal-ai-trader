@@ -22,6 +22,13 @@ _activity = st.Page("pages/3_Activity_Log.py", title="Activity Log", icon="📜"
 _retros = st.Page("pages/6_Retrospectives.py", title="Retrospectives", icon="🔍",
                   url_path="retros")
 
+# Markets (multi-market: IN / US / crypto)
+_markets = st.Page("pages/10_Markets.py", title="Markets", icon="🌐", url_path="markets")
+_leaderboard = st.Page("pages/11_Leaderboard.py", title="Leaderboard", icon="🏆",
+                       url_path="leaderboard")
+_golive = st.Page("pages/12_Go_Live.py", title="Go-Live", icon="🚦", url_path="go-live")
+_backtests = st.Page("pages/13_Backtests.py", title="Backtests", icon="🧪", url_path="backtests")
+
 # Autonomy
 _league = st.Page("pages/8_Competition_League.py", title="Competition League", icon="🏆",
                   url_path="league")
@@ -39,6 +46,7 @@ st.navigation(
     {
         "": [_overview],
         "Trading": [_summary, _charts, _activity, _retros],
+        "Markets": [_markets, _leaderboard, _golive, _backtests],
         "Autonomy": [_league, _improve],
         "System": [_system_map, _settings, _how],
     }

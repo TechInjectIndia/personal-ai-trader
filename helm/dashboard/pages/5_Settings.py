@@ -250,6 +250,27 @@ FLAG_FIELDS = {
                 "multi-timeframe A/B. Raises same-symbol concurrency.",
         "review": True,
     },
+    "CLUSTER_ON_EMIT": {
+        "label": "G1 · Proposal clustering on emit",
+        "help": "Assign each new improvement proposal to a cluster at creation so "
+                "the backlog stays a small ranked set. Shipped dark; enable after "
+                "the backfill has run.",
+        "review": True,
+    },
+    "EVAL_GATE_ENABLED": {
+        "label": "G3 · Eval-gate on releases",
+        "help": "Tester re-prices the recent house book over recorded candles and "
+                "HOLDs a release that regresses the modeled economics. Shipped dark "
+                "until the gate is trusted on live releases.",
+        "review": True,
+    },
+    "SAFETY_GUARD_ENABLED": {
+        "label": "S4 · Trading-safety guard",
+        "help": "Independent pre-trade backstop on top of the risk gate (hard "
+                "notional ceiling, worst-case-loss bound, stop-side sanity) plus a "
+                "consecutive-loss circuit breaker. Enable before funding real capital.",
+        "review": True,
+    },
 }
 
 
