@@ -10,6 +10,8 @@ nothing on this page arms live trading.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 
 import streamlit as st
 
@@ -21,7 +23,15 @@ st.set_page_config(page_title="Helm — Go-Live", page_icon="🚦", layout="wide
 apply_theme()
 page_header("Go-Live Readiness",
             "Fund a market only when paper AND backtest are positive", icon="🚦")
-st.caption("Read-only verdict. Funding is a manual human action — nothing here arms live trading.")
+st.caption("Read-only verdict. Funding is a manual human action — nothing here arms live trading. "
+           "Re-runs automatically daily after close; use the button to refresh now.")
+
+if st.button("↻ Re-run readiness now"):
+    with st.spinner("Evaluating all markets (paper + backtest gates)…"):
+        proc = subprocess.run([sys.executable, "scripts/go_live_readiness.py", "--persist"],
+                              capture_output=True, text=True, timeout=180)
+    st.code((proc.stdout or proc.stderr or "(no output)")[-2000:])
+    st.rerun()
 
 
 def _reasons(val) -> list:

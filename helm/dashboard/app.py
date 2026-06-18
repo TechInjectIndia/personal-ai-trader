@@ -28,6 +28,8 @@ _leaderboard = st.Page("pages/11_Leaderboard.py", title="Leaderboard", icon="�
                        url_path="leaderboard")
 _golive = st.Page("pages/12_Go_Live.py", title="Go-Live", icon="🚦", url_path="go-live")
 _backtests = st.Page("pages/13_Backtests.py", title="Backtests", icon="🧪", url_path="backtests")
+_backtest_lab = st.Page("pages/14_Backtest_Lab.py", title="Backtest Lab", icon="⚗️",
+                        url_path="backtest-lab")
 
 # Autonomy
 _league = st.Page("pages/8_Competition_League.py", title="Competition League", icon="🏆",
@@ -46,7 +48,7 @@ st.navigation(
     {
         "": [_overview],
         "Trading": [_summary, _charts, _activity, _retros],
-        "Markets": [_markets, _leaderboard, _golive, _backtests],
+        "Markets": [_markets, _leaderboard, _golive, _backtests, _backtest_lab],
         "Autonomy": [_league, _improve],
         "System": [_system_map, _settings, _how],
     }
