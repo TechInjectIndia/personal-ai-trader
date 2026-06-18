@@ -512,6 +512,31 @@ ALTER TABLE signals      ADD COLUMN IF NOT EXISTS market TEXT NOT NULL DEFAULT '
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS market TEXT NOT NULL DEFAULT 'IN';
 ALTER TABLE daily_state  ADD COLUMN IF NOT EXISTS market TEXT NOT NULL DEFAULT 'IN';
 
+-- Competition league multi-market: a competitor can trade IN/US/CRYPTO, each
+-- with its OWN isolated wallet + weekly mandate. Additive — existing wallets and
+-- mandates backfill to market='IN'/currency='INR', so the incumbent IN league is
+-- byte-identical; per-market rows are seeded on first use.
+ALTER TABLE competitor_wallets  ADD COLUMN IF NOT EXISTS market   TEXT NOT NULL DEFAULT 'IN';
+ALTER TABLE competitor_wallets  ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'INR';
+ALTER TABLE competitor_mandates ADD COLUMN IF NOT EXISTS market   TEXT NOT NULL DEFAULT 'IN';
+-- Repoint the wallet PK from (competitor_id) to (competitor_id, market); guarded
+-- on the current key arity so re-runs are no-ops.
+DO $$
+DECLARE n int;
+BEGIN
+    SELECT cardinality(conkey) INTO n FROM pg_constraint
+     WHERE conname = 'competitor_wallets_pkey'
+       AND connamespace = current_schema()::regnamespace;
+    IF n = 1 THEN
+        ALTER TABLE competitor_wallets DROP CONSTRAINT competitor_wallets_pkey;
+        ALTER TABLE competitor_wallets ADD PRIMARY KEY (competitor_id, market);
+    END IF;
+END $$;
+-- Mandate uniqueness is now per (competitor, market, week).
+DROP INDEX IF EXISTS competitor_mandates_week;
+CREATE UNIQUE INDEX IF NOT EXISTS competitor_mandates_market_week
+    ON competitor_mandates (competitor_id, market, week_start);
+
 -- Fractional quantities (crypto). Existing integer values are preserved exactly;
 -- guarded so a re-run doesn't needlessly rewrite the table once already NUMERIC.
 DO $$ BEGIN

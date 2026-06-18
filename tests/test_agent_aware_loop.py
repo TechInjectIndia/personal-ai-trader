@@ -65,7 +65,7 @@ def freestyle_competitor():
             INSERT INTO competitor_wallets
                 (competitor_id, initial_capital_inr, available_inr, realized_pnl_inr)
             VALUES (%s, 50000, 50000, 0)
-            ON CONFLICT (competitor_id) DO NOTHING
+            ON CONFLICT (competitor_id, market) DO NOTHING
             """,
             (TEST_CID,),
         )
@@ -74,7 +74,7 @@ def freestyle_competitor():
             INSERT INTO competitor_mandates
                 (competitor_id, week_start, universe, strategy_config, rationale)
             VALUES (%s, %s, '["RELIANCE","TCS"]'::jsonb, %s::jsonb, 'test')
-            ON CONFLICT (competitor_id, week_start)
+            ON CONFLICT (competitor_id, market, week_start)
             DO UPDATE SET strategy_config = EXCLUDED.strategy_config
             """,
             (TEST_CID, wk, _json(ORIG_STRATEGY_CONFIG)),

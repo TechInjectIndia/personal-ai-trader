@@ -26,10 +26,10 @@ from decimal import Decimal
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
-from helm.charges import round_trip_breakdown
-from helm.config import dynamic_position_cap, live_risk_limits
+from helm.config import dynamic_position_cap, live_risk_limits_for
 from helm.competition.wallet import competitor_wallet_state, sync_wallet_cache
 from helm.data.store import conn, insert_audit
+from helm.markets import get_market
 from helm.orchestrator import risk
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -51,22 +51,29 @@ class CloseResult(NamedTuple):
     message: str
 
 
-def _size_qty(competitor_id: str, entry: Decimal, requested_qty: int | None) -> int:
-    """Shares to buy: explicit request CLAMPED to budget, else auto-size to it.
+def _size_qty(
+    competitor_id: str, entry: Decimal, requested_qty: int | float | None,
+    market: str = "IN",
+) -> int | Decimal:
+    """Quantity to buy: explicit request CLAMPED to budget, else auto-size to it.
 
-    Budget = min(dynamic per-trade cap for this competitor, wallet cash free).
-    A freestyle agent that asks for more shares than the per-trade cap / wallet
-    can fund used to be hard-rejected by risk.evaluate, discarding the whole
-    order (the dominant cause of cap-blocked SKIPs — gemini-momentum/nemotron
-    got ~0 fills on 100s of intents). Instead, size DOWN to what fits: take the
-    smaller of the agent's request and the affordable share count, so a valid
-    setup still trades at a capped size rather than not at all. The risk gate
-    re-checks both ceilings, so a clamped qty always passes them.
+    Budget = min(dynamic per-trade cap for this competitor+market, wallet cash
+    free). A freestyle agent that asks for more than the cap/wallet can fund used
+    to be hard-rejected by risk.evaluate, discarding the whole order (the dominant
+    cause of cap-blocked SKIPs). Instead, size DOWN to what fits. Fractional venues
+    (crypto) size to 8 dp; lot venues (IN/US equities) to whole shares. The risk
+    gate re-checks both ceilings, so a clamped qty always passes them.
     """
-    wallet = competitor_wallet_state(competitor_id)
-    base_cap = live_risk_limits().max_position_inr
+    wallet = competitor_wallet_state(competitor_id, market)
+    base_cap = live_risk_limits_for(market).max_position_inr
     effective_cap = dynamic_position_cap(wallet.realised_net_pnl, base_cap)
     budget = min(effective_cap, wallet.available)
+    if get_market(market).fractional:
+        affordable = ((budget / entry).quantize(Decimal("0.00000001"))
+                      if entry > 0 and budget > 0 else Decimal("0"))
+        if requested_qty is not None:
+            return max(Decimal("0"), min(Decimal(str(requested_qty)), affordable))
+        return affordable
     affordable = int(budget // entry) if budget >= entry else 0
     if requested_qty is not None:
         return min(max(0, int(requested_qty)), affordable)
@@ -84,12 +91,15 @@ def execute_competitor_open(
     qty: int | None = None,
     actor: str,
     rationale: str = "",
+    market: str = "IN",
 ) -> OpenResult:
     """Open a paper trade for a competitor through the risk gate.
 
     Always records a `decisions` row (TAKE on pass, SKIP on block) tied to a
-    freshly synthesised, already-consumed `signals` row. Returns OpenResult.
-    Long-only for v1 (matches the house bot): non-BUY sides are rejected.
+    freshly synthesised, already-consumed `signals` row, all stamped with
+    `market` so the per-(competitor, market) wallet/leaderboard stay isolated.
+    Returns OpenResult. Long-only for v1 (matches the house bot): non-BUY
+    sides are rejected.
     """
     entry = Decimal(entry)
     stop_loss = Decimal(stop_loss)
@@ -98,19 +108,19 @@ def execute_competitor_open(
     if side != "BUY":
         return OpenResult(False, None, None, f"v1 is long-only; refused side={side!r}")
 
-    sized_qty = _size_qty(competitor_id, entry, qty)
+    sized_qty = _size_qty(competitor_id, entry, qty, market)
 
     with conn() as c:
         sig = c.execute(
             """
             INSERT INTO signals
                 (strategy, symbol, side, entry_price, stop_loss, target,
-                 rationale, consumed, competitor_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, %s)
+                 rationale, consumed, competitor_id, market)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, %s, %s)
             RETURNING id
             """,
             (FREESTYLE_STRATEGY, symbol, side, entry, stop_loss, target,
-             rationale, competitor_id),
+             rationale, competitor_id, market),
         ).fetchone()
         signal_id = sig["id"]
 
@@ -118,7 +128,8 @@ def execute_competitor_open(
             allowed, reason = False, "wallet cannot afford one share / qty<=0"
         else:
             allowed, reason = risk.evaluate(
-                symbol, side, sized_qty, entry, competitor_id=competitor_id
+                symbol, side, sized_qty, entry, competitor_id=competitor_id,
+                market=market,
             )
 
         decision = c.execute(
@@ -150,21 +161,21 @@ def execute_competitor_open(
             """
             INSERT INTO paper_trades
                 (decision_id, symbol, side, qty, entry_price, entry_ts,
-                 stop_loss, target, status, competitor_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'OPEN', %s)
+                 stop_loss, target, status, competitor_id, market)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'OPEN', %s, %s)
             RETURNING id
             """,
             (decision_id, symbol, side, sized_qty, entry, datetime.now(IST),
-             stop_loss, target, competitor_id),
+             stop_loss, target, competitor_id, market),
         ).fetchone()
         trade_id = trade["id"]
 
-    sync_wallet_cache(competitor_id)
+    sync_wallet_cache(competitor_id, market)
     insert_audit(
         "competition_execute", "opened",
         {"competitor_id": competitor_id, "decision_id": decision_id,
-         "trade_id": trade_id, "symbol": symbol, "side": side,
-         "qty": sized_qty, "entry": str(entry)},
+         "trade_id": trade_id, "symbol": symbol, "side": side, "market": market,
+         "qty": float(sized_qty), "entry": str(entry)},
     )
     return OpenResult(
         True, decision_id, trade_id,
@@ -179,21 +190,23 @@ def close_competitor_position(
     *,
     reason: str = "MANUAL",
     actor: str = "competition",
+    market: str = "IN",
 ) -> CloseResult:
-    """Close the competitor's OPEN trade in `symbol` at `exit_price`.
+    """Close the competitor's OPEN trade in `symbol` (in `market`) at `exit_price`.
 
-    Mirrors manage_positions._close_trade's charge + net-P&L accounting. No-op
-    (ok=False) if the competitor holds no open position in that symbol.
+    Mirrors manage_positions._close_trade's charge + net-P&L accounting, using
+    that market's own cost model (IN → ZerodhaCosts, byte-identical). No-op
+    (ok=False) if the competitor holds no open position in that symbol+market.
     """
     exit_price = Decimal(exit_price)
     with conn() as c:
         trade = c.execute(
             """
             SELECT * FROM paper_trades
-            WHERE status = 'OPEN' AND symbol = %s AND competitor_id = %s
+            WHERE status = 'OPEN' AND symbol = %s AND competitor_id = %s AND market = %s
             ORDER BY entry_ts ASC LIMIT 1
             """,
-            (symbol, competitor_id),
+            (symbol, competitor_id, market),
         ).fetchone()
         if not trade:
             return CloseResult(False, None, None,
@@ -203,7 +216,7 @@ def close_competitor_position(
         entry = Decimal(trade["entry_price"])
         side = trade["side"]
         pnl = (exit_price - entry) * qty if side == "BUY" else (entry - exit_price) * qty
-        breakdown = round_trip_breakdown(side, qty, entry, exit_price)
+        breakdown = get_market(market).costs.round_trip_breakdown(side, qty, entry, exit_price)
         net_pnl = pnl - breakdown.total
 
         c.execute(
@@ -217,12 +230,12 @@ def close_competitor_position(
              trade["id"]),
         )
 
-    sync_wallet_cache(competitor_id)
+    sync_wallet_cache(competitor_id, market)
     insert_audit(
         "competition_execute", "closed",
         {"competitor_id": competitor_id, "trade_id": trade["id"], "symbol": symbol,
-         "side": side, "qty": qty, "entry": str(entry), "exit": str(exit_price),
-         "pnl_inr": str(pnl), "charges_inr": str(breakdown.total),
+         "side": side, "qty": float(qty), "market": market, "entry": str(entry),
+         "exit": str(exit_price), "pnl_inr": str(pnl), "charges_inr": str(breakdown.total),
          "net_pnl_inr": str(net_pnl), "reason": reason, "actor": actor},
     )
     return CloseResult(

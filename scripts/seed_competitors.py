@@ -110,7 +110,7 @@ def seed() -> dict[str, int]:
                 INSERT INTO competitor_wallets
                     (competitor_id, initial_capital_inr, available_inr, realized_pnl_inr)
                 VALUES (%s, %s, %s, 0)
-                ON CONFLICT (competitor_id) DO NOTHING
+                ON CONFLICT (competitor_id, market) DO NOTHING
                 RETURNING competitor_id
                 """,
                 (cid, initial, initial),

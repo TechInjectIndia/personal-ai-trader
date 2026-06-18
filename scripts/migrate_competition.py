@@ -79,7 +79,7 @@ def _seed_house_wallet(c, initial_capital: Decimal) -> bool:
         INSERT INTO competitor_wallets
             (competitor_id, initial_capital_inr, available_inr, realized_pnl_inr)
         VALUES (%s, %s, %s, 0)
-        ON CONFLICT (competitor_id) DO NOTHING
+        ON CONFLICT (competitor_id, market) DO NOTHING
         RETURNING competitor_id
         """,
         (HOUSE_ID, initial_capital, initial_capital),

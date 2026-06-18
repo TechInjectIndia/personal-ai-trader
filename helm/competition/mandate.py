@@ -214,24 +214,26 @@ def persist_mandate(
     raw: dict[str, Any],
     *,
     wk_start: date | None = None,
+    market: str = "IN",
 ) -> None:
-    """Upsert one mandate row for (competitor_id, week_start)."""
+    """Upsert one mandate row for (competitor_id, market, week_start)."""
     wk = wk_start or current_week_start()
     with conn() as c:
         c.execute(
             """
             INSERT INTO competitor_mandates
-                (competitor_id, week_start, universe, strategy_config, rationale, raw)
-            VALUES (%s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb)
-            ON CONFLICT (competitor_id, week_start) DO UPDATE SET
+                (competitor_id, market, week_start, universe, strategy_config,
+                 rationale, raw)
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb)
+            ON CONFLICT (competitor_id, market, week_start) DO UPDATE SET
                 universe        = EXCLUDED.universe,
                 strategy_config = EXCLUDED.strategy_config,
                 rationale       = EXCLUDED.rationale,
                 raw             = EXCLUDED.raw,
                 created_at      = now()
             """,
-            (competitor_id, wk, json.dumps(universe), json.dumps(strategy_config),
-             rationale, json.dumps(raw)),
+            (competitor_id, market, wk, json.dumps(universe),
+             json.dumps(strategy_config), rationale, json.dumps(raw)),
         )
 
 

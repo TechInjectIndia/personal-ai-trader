@@ -28,7 +28,7 @@ def _wallet_stub(available: str, realised: str = "0"):
 def _wallet(monkeypatch):
     """Pin a competitor wallet at ₹50k free, 0 realised, base cap ₹15k."""
     w = _wallet_stub("50000")
-    monkeypatch.setattr(ex, "competitor_wallet_state", lambda cid: w)
+    monkeypatch.setattr(ex, "competitor_wallet_state", lambda cid, market="IN": w)
     return w
 
 
@@ -56,6 +56,6 @@ def test_unaffordable_price_returns_zero(_wallet):
 
 def test_wallet_smaller_than_cap_binds(monkeypatch):
     w = _wallet_stub("4000")                # only ₹4k free
-    monkeypatch.setattr(ex, "competitor_wallet_state", lambda cid: w)
+    monkeypatch.setattr(ex, "competitor_wallet_state", lambda cid, market="IN": w)
     # request 10 @ ₹1000 = ₹10k, but wallet caps at ₹4k → 4 shares
     assert ex._size_qty("gemini-momentum", Decimal("1000"), requested_qty=10) == 4

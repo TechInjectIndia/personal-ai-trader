@@ -111,6 +111,27 @@ _EXTRA_TRADABLE: list[str] = [
 TRADABLE_UNIVERSE: list[str] = WATCHLIST + [s for s in _EXTRA_TRADABLE if s not in WATCHLIST]
 
 
+def market_tradable_universe(market: str = "IN") -> list[str]:
+    """Candidate symbol pool a competitor's weekly mandate may pick from, per
+    market. IN keeps the curated NSE TRADABLE_UNIVERSE (byte-identical); US/CRYPTO
+    use their own watchlists."""
+    return {
+        "IN": TRADABLE_UNIVERSE,
+        "US": US_WATCHLIST,
+        "CRYPTO": CRYPTO_WATCHLIST,
+    }.get(market, TRADABLE_UNIVERSE)
+
+
+def market_default_watchlist(market: str = "IN") -> list[str]:
+    """Fallback universe for a competitor with no mandate yet, per market. IN
+    keeps WATCHLIST (the runner slices it); US/CRYPTO use their watchlists."""
+    return {
+        "IN": WATCHLIST,
+        "US": US_WATCHLIST,
+        "CRYPTO": CRYPTO_WATCHLIST,
+    }.get(market, WATCHLIST)
+
+
 # --- Trading hours (IST) ---
 # We deliberately skip the first 15 minutes (volatility / spread blowouts) and
 # square off well before the 15:25 IST regulatory auto-square-off for MIS.

@@ -43,7 +43,7 @@ def _scrub():
         c.execute(
             "INSERT INTO competitor_wallets (competitor_id, initial_capital_inr, "
             "available_inr, realized_pnl_inr) VALUES (%s, 50000, 50000, 0) "
-            "ON CONFLICT (competitor_id) DO NOTHING", (SURFACE,))
+            "ON CONFLICT (competitor_id, market) DO NOTHING", (SURFACE,))
     yield
     _cleanup()
 
