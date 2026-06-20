@@ -94,6 +94,36 @@ def test_leaderboard_is_market_scoped_and_currency_correct():
         _wipe()
 
 
+def test_crypto_min_edge_gate_blocks_sub_fee_target():
+    cid = _mkcompetitor()
+    try:
+        # Target only 0.1% above entry vs ~0.2% round-trip crypto fee → E2C < 3.
+        res = ex.execute_competitor_open(cid, "BTC", "BUY", Decimal("100"),
+                                         Decimal("95"), Decimal("100.10"),
+                                         qty=None, actor=cid, market="CRYPTO")
+        assert not res.ok and "below_min_edge_to_cost" in res.message
+        # A ~1% target clears 3× cost → allowed.
+        res2 = ex.execute_competitor_open(cid, "BTC", "BUY", Decimal("100"),
+                                          Decimal("95"), Decimal("101"),
+                                          qty=None, actor=cid, market="CRYPTO")
+        assert res2.ok, res2.message
+    finally:
+        _wipe()
+
+
+def test_in_competitor_exempt_from_min_edge_gate():
+    cid = _mkcompetitor()
+    try:
+        # A tiny IN target that would fail E2C — the IN league is intentionally
+        # exempt (byte-identical), so it's NOT blocked by the min-edge gate.
+        res = ex.execute_competitor_open(cid, "RELIANCE", "BUY", Decimal("1000"),
+                                         Decimal("990"), Decimal("1000.50"),
+                                         qty=5, actor=cid, market="IN")
+        assert "below_min_edge_to_cost" not in res.message
+    finally:
+        _wipe()
+
+
 def test_in_path_unchanged_default_market():
     cid = _mkcompetitor()
     try:

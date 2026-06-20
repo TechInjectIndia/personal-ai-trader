@@ -26,9 +26,10 @@ from decimal import Decimal
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
-from helm.config import dynamic_position_cap, live_risk_limits_for
+from helm.config import dynamic_position_cap, live_risk_limits_for, live_tunable
 from helm.competition.wallet import competitor_wallet_state, sync_wallet_cache
 from helm.data.store import conn, insert_audit
+from helm.instrument import log_event
 from helm.markets import get_market
 from helm.orchestrator import risk
 
@@ -49,6 +50,15 @@ class CloseResult(NamedTuple):
     trade_id: int | None
     net_pnl_inr: Decimal | None
     message: str
+
+
+def _edge_to_cost(cost_model, side: str, qty, entry: Decimal, target: Decimal) -> Decimal:
+    """Gross reward to target as a multiple of the round-trip cost, using the
+    trade's MARKET cost model (so the gate and the books agree per venue). Mirrors
+    scripts.paper_execute._edge_to_cost. Decimal('0') when cost is zero."""
+    exp_cost = cost_model.round_trip_breakdown(side, qty, entry, target).total
+    gross_reward = abs(target - entry) * qty
+    return (gross_reward / exp_cost) if exp_cost > 0 else Decimal("0")
 
 
 def _size_qty(
@@ -126,6 +136,18 @@ def execute_competitor_open(
 
         if sized_qty <= 0:
             allowed, reason = False, "wallet cannot afford one share / qty<=0"
+        elif market != "IN" and target is not None and (
+            e2c := _edge_to_cost(get_market(market).costs, side, sized_qty, entry, target)
+        ) < (min_e2c := live_tunable("MIN_EDGE_TO_COST")):
+            # F2 for non-IN competitors: target move too small vs round-trip cost
+            # — a structural net loser (acute on crypto: ~0.20% taker round-trip vs
+            # sub-0.3% scalps). IN competitors are intentionally left unchanged
+            # (byte-identical league); the IN house path keeps its own F2 gate.
+            allowed, reason = False, f"below_min_edge_to_cost (E2C={e2c:.2f})"
+            log_event("f2_min_edge_gate", "blocked", competitor_id=competitor_id,
+                      market=market, symbol=symbol, qty=float(sized_qty),
+                      entry=float(entry), target=float(target),
+                      e2c=float(e2c), min_required=float(min_e2c))
         else:
             allowed, reason = risk.evaluate(
                 symbol, side, sized_qty, entry, competitor_id=competitor_id,
